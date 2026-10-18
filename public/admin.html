@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Kumon Admin</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1><span class="logo">K</span> Kumon Admin</h1>
+  <nav class="tabs hidden" id="tabs">
+    <a href="#board" data-route="board">Live board</a>
+    <a href="#students" data-route="students">Students</a>
+    <a href="#activity" data-route="activity">Activity</a>
+    <a href="#settings" data-route="settings">Settings</a>
+  </nav>
+  <span class="spacer"></span>
+  <a id="link-student" class="btn btn-sm hidden" href="/" target="_blank" rel="noopener">Student page</a>
+  <span class="clock" id="clock"></span>
+  <button id="btn-logout" class="btn btn-sm btn-ghost hidden" type="button">Log out</button>
+</header>
+
+<!-- First-run setup -->
+<section id="view-setup" class="auth hidden">
+  <h2>Create the admin password</h2>
+  <p id="setup-blocked" class="hidden">The first password must be created on the server computer. Open <code>http://localhost:8787/admin</code> there.</p>
+  <form id="setup-form">
+    <label class="field">Password (at least 8 characters)<input class="input" name="password" type="password" minlength="8" required autocomplete="new-password"></label>
+    <label class="field">Repeat password<input class="input" name="password2" type="password" minlength="8" required autocomplete="new-password"></label>
+    <div class="error" id="setup-error"></div>
+    <button class="btn btn-primary w-full" type="submit">Save and continue</button>
+  </form>
+</section>
+
+<!-- Login -->
+<section id="view-login" class="auth hidden">
+  <h2>Teacher login</h2>
+  <form id="login-form">
+    <label class="field">Password<input class="input" name="password" type="password" required autocomplete="current-password"></label>
+    <div class="error" id="login-error"></div>
+    <button class="btn btn-primary w-full" type="submit">Log in</button>
+  </form>
+  <p class="auth-link"><a href="/">Student page</a></p>
+</section>
+
+<!-- App -->
+<main id="view-app" class="wrap hidden">
+
+  <section id="page-board" class="page">
+    <div class="pagehead">
+      <h2>Live board</h2>
+      <div class="stats" id="board-stats"></div>
+    </div>
+    <div id="board-list" class="list"></div>
+    <div id="board-expected"></div>
+  </section>
+
+  <section id="page-students" class="page hidden">
+    <div class="pagehead"><h2>Students</h2><span class="help" id="student-count"></span></div>
+    <div class="panel" id="add-panel"></div>
+    <div class="toolbar">
+      <input id="filter" class="input" type="search" placeholder="Filter students…" autocomplete="off">
+    </div>
+    <div id="student-list" class="list"></div>
+  </section>
+
+  <section id="page-activity" class="page hidden">
+    <div class="pagehead"><h2>Activity</h2></div>
+    <div class="panel">
+      <h3>Export attendance (CSV)</h3>
+      <div class="row">
+        <label class="field">From<input id="exp-from" class="input" type="date"></label>
+        <label class="field">To<input id="exp-to" class="input" type="date"></label>
+        <label class="field">&nbsp;<button id="btn-export" class="btn btn-primary w-full" type="button">Download CSV</button></label>
+      </div>
+    </div>
+    <h3 class="sec">Today</h3>
+    <table class="log"><thead><tr><th>Time</th><th>Student</th><th>Event</th><th>From</th></tr></thead><tbody id="log"></tbody></table>
+  </section>
+
+  <section id="page-settings" class="page hidden">
+    <div class="pagehead"><h2>Settings</h2></div>
+    <div class="panel" id="address-panel"></div>
+    <div class="panel" id="password-panel"></div>
+    <div class="panel" id="backup-panel"></div>
+  </section>
+
+</main>
+
+<div id="modal-root"></div>
+<script src="/common.js"></script>
+<script src="/admin.js"></script>
+</body>
+</html>

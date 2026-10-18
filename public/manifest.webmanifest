@@ -1,0 +1,9 @@
+{
+  "name": "Kumon Check-In",
+  "short_name": "Kumon",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f6fa",
+  "theme_color": "#1f6feb",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

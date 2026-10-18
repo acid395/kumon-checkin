@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Kumon Check-In">
+<title>Kumon Check-In</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1><span class="logo">K</span> Kumon Check-In</h1>
+  <span class="spacer"></span>
+  <span class="clock" id="clock"></span>
+</header>
+
+<div id="offline" class="banner hidden" role="status">Not connected. Please tell a teacher.</div>
+
+<main class="wrap" id="main">
+  <div class="hero">
+    <div>
+      <h2 id="greeting">Hello!</h2>
+      <p>Tap your name to check in or out.</p>
+    </div>
+  </div>
+  <div class="searchwrap" id="searchwrap">
+    <input id="search" class="input search" type="search" autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false" placeholder="Type your name…" aria-label="Search your name">
+  </div>
+  <div id="grid" class="grid" aria-live="polite"></div>
+</main>
+
+<footer class="foot"><a href="/admin" id="staff-link">Staff login</a></footer>
+
+<div id="modal-root"></div>
+<script src="/common.js"></script>
+<script src="/student.js"></script>
+</body>
+</html>

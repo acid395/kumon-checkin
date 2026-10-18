@@ -1,0 +1,19 @@
+# One-click test deployment on Render (https://render.com).
+# Render -> New -> Blueprint -> pick this repo. You will be asked for ADMIN_PASSWORD.
+# The free plan has no persistent disk: data resets whenever the service restarts, which is
+# fine for a test site. Use only made-up names on a public test site.
+services:
+  - type: web
+    name: kumon-checkin
+    runtime: node
+    plan: free
+    buildCommand: ""
+    startCommand: node server.js
+    healthCheckPath: /api/student/students
+    envVars:
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: DEMO
+        value: "1"
+      - key: TRUST_PROXY
+        value: "1"
