@@ -6,7 +6,7 @@ student's session runs.
 
 * **No cloud, no accounts, no third parties.** It runs on one computer at the center and devices
   on the same Wi-Fi connect to it. Nothing is ever sent outside your network.
-* **Zero dependencies.** Only Node.js is needed. There is nothing to `npm install`.
+* **Zero dependencies.** Only Node.js is needed. 
 * Loads in a few kilobytes and works on iPad Safari, Mac, and Windows browsers.
 
 ## 1. Start it
