@@ -39,8 +39,10 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000;      // admin login lasts 12h of ina
 const MAX_BODY_BYTES = 64 * 1024;
 const LOGIN_MAX_FAILS = 5;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const KEEP_ATTENDANCE_DAYS = 180;
-const MAX_LOG_ROWS = 10000;
+const KEEP_RECENT_DAYS = 14;   // day records kept in the main file (completed visits live in history/)
+const KEEP_LOG_DAYS = 7;       // event log (today's activity) kept in the main file
+const HISTORY_DIR = path.join(DATA_DIR, 'history');   // sessions-YYYY.ndjson, one visit per line, kept forever
+const MAX_VIEW_ROWS = 1500;    // most rows the Records page shows at once (CSV export has no cap)
 
 // Hosting options (all optional; none are needed when running on a computer at the center):
 //   TRUST_PROXY=1     behind a hosting provider's HTTPS proxy (Render, Fly, Railway...). Set
@@ -61,7 +63,7 @@ function defaultData() {
 }
 
 function ensureDirs() {
-  for (const dir of [DATA_DIR, BACKUP_DIR]) {
+  for (const dir of [DATA_DIR, BACKUP_DIR, HISTORY_DIR]) {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     try { fs.chmodSync(dir, 0o700); } catch (_) {}
   }
@@ -166,12 +168,171 @@ if (DEMO && data.students.length === 0) {
 }
 
 function save() {
-  // prune old attendance days and cap the log
-  const cutoff = new Date(Date.now() - KEEP_ATTENDANCE_DAYS * 86400000);
-  const cutoffKey = localDateKey(cutoff);
-  for (const k of Object.keys(data.attendance)) if (k < cutoffKey) delete data.attendance[k];
-  if (data.log.length > MAX_LOG_ROWS) data.log = data.log.slice(-MAX_LOG_ROWS);
+  // The main file only keeps recent days; every completed visit is already in history/.
+  const dayCutoff = localDateKey(new Date(Date.now() - KEEP_RECENT_DAYS * 86400000));
+  for (const k of Object.keys(data.attendance)) if (k < dayCutoff) delete data.attendance[k];
+  const logCutoff = new Date(Date.now() - KEEP_LOG_DAYS * 86400000).toISOString();
+  if (data.log.length && data.log[0].ts < logCutoff) data.log = data.log.filter((e) => e.ts >= logCutoff);
   writeData(data);
+}
+
+// ---------------------------------------------------------------- visit history (permanent)
+//
+// Every completed visit (check-in + check-out) is appended as one JSON line to
+// data/history/sessions-YYYY.ndjson. Appending is cheap and crash-safe, the files are never
+// rewritten, and they stay small (roughly 150 bytes per visit, so a few MB per year even for
+// a large center). All lines are also held in memory for fast reports.
+
+let history = [];                 // all visits, in the order they were written
+const historyIds = new Set();
+
+function loadHistory() {
+  ensureDirs();
+  const files = fs.readdirSync(HISTORY_DIR).filter((f) => /^sessions-\d{4}\.ndjson$/.test(f)).sort();
+  for (const f of files) {
+    const text = fs.readFileSync(path.join(HISTORY_DIR, f), 'utf8');
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const v = JSON.parse(line);
+        if (v && v.id && !historyIds.has(v.id)) { historyIds.add(v.id); history.push(v); }
+      } catch (_) { /* a half-written last line after a power cut: skip it */ }
+    }
+  }
+}
+
+function appendVisit(v) {
+  if (historyIds.has(v.id)) return;
+  ensureDirs();
+  const file = path.join(HISTORY_DIR, `sessions-${v.date.slice(0, 4)}.ndjson`);
+  fs.appendFileSync(file, JSON.stringify(v) + '\n', { mode: 0o600 });
+  historyIds.add(v.id); history.push(v);
+}
+
+// Build the permanent record for a day record that has both in and out.
+function visitFrom(studentId, dateKey, rec) {
+  const s = data.students.find((x) => x.id === studentId);
+  const inAt = new Date(rec.in), outAt = new Date(rec.out);
+  return {
+    id: `${studentId}-${rec.in}`,
+    date: dateKey,
+    studentId,
+    name: rec.name || (s && s.name) || 'Unknown',
+    grade: rec.grade ?? (s ? s.grade : ''),
+    in: rec.in,
+    out: rec.out,
+    min: Math.max(0, Math.round((outAt - inAt) / 60000)),
+    schedIn: rec.schedIn || (s && s.inTime) || '',
+    schedOut: rec.schedOut || (s && s.outTime) || '',
+    src: rec.outSrc || 'student',
+    auto: !!rec.auto,
+  };
+}
+
+function archiveRecord(studentId, dateKey, rec) {
+  if (!rec.in || !rec.out || rec.archived) return;
+  appendVisit(visitFrom(studentId, dateKey, rec));
+  rec.archived = true;
+}
+
+// Once a day has passed, any visit still open (student forgot to check out) is closed at the
+// scheduled check-out time and marked as closed automatically, so every visit has a duration.
+function closeStaleDays() {
+  const today = localDateKey(new Date());
+  let changed = false;
+  for (const [dateKey, day] of Object.entries(data.attendance)) {
+    if (dateKey >= today) continue;
+    for (const [studentId, rec] of Object.entries(day)) {
+      if (rec.in && !rec.out) {
+        const s = data.students.find((x) => x.id === studentId);
+        const sched = rec.schedOut || (s && s.outTime) || '';
+        let outAt = HHMM.test(sched) ? new Date(`${dateKey}T${sched}:00`) : null;
+        if (!outAt || !(outAt > new Date(rec.in))) outAt = new Date(new Date(rec.in).getTime() + 60000);
+        rec.out = outAt.toISOString(); rec.auto = true; rec.outSrc = 'auto'; rec.dismissed = true;
+        changed = true;
+      }
+      if (!rec.archived) { archiveRecord(studentId, dateKey, rec); changed = true; }
+    }
+  }
+  if (changed) save();
+}
+
+// Reports: visits in a date range, optionally one student, grouped by visit/week/month/year.
+function weekStart(dateKey) {
+  const d = new Date(`${dateKey}T12:00:00`);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // back to Monday
+  return localDateKey(d);
+}
+const periodCache = new Map(); // "group|date" -> period; there are only ~1,100 dates in 3 years, so this stays tiny
+function periodOf(dateKey, group) {
+  const ck = `${group}|${dateKey}`;
+  let p = periodCache.get(ck);
+  if (p) return p;
+  if (group === 'week') { const ws = weekStart(dateKey); p = { key: ws, start: ws, label: `Week of ${fmtDateLabel(ws)}` }; }
+  else if (group === 'month') { const k = dateKey.slice(0, 7); p = { key: k, start: k + '-01', label: new Date(`${k}-01T12:00:00`).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) }; }
+  else { const y = dateKey.slice(0, 4); p = { key: y, start: y + '-01-01', label: y }; }
+  periodCache.set(ck, p);
+  return p;
+}
+function fmtDateLabel(dateKey) { return new Date(`${dateKey}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
+function daysBetween(a, b) { return Math.round((new Date(`${b}T12:00:00`) - new Date(`${a}T12:00:00`)) / 86400000) + 1; }
+
+function queryHistory({ from, to, studentId, group }) {
+  const today = localDateKey(new Date());
+  const rows = [];
+  for (const v of history) if (v.date >= from && v.date <= to && (!studentId || v.studentId === studentId)) rows.push(v);
+  // visits in progress right now (today only) so the Records page matches the board
+  if (to >= today && from <= today) {
+    for (const [sid, rec] of Object.entries(data.attendance[today] || {})) {
+      if (!rec.in || rec.out || (studentId && sid !== studentId)) continue;
+      const s = data.students.find((x) => x.id === sid);
+      rows.push({ id: `${sid}-${rec.in}`, date: today, studentId: sid, name: rec.name || (s && s.name) || 'Unknown', grade: rec.grade ?? (s ? s.grade : ''), in: rec.in, out: null, min: Math.max(0, Math.round((Date.now() - new Date(rec.in)) / 60000)), schedIn: rec.schedIn || (s && s.inTime) || '', schedOut: rec.schedOut || (s && s.outTime) || '', src: '', auto: false, open: true });
+    }
+  }
+  const days = daysBetween(from, to);
+  if (!['visit', 'week', 'month', 'year'].includes(group)) group = days <= 35 ? 'visit' : days <= 190 ? 'week' : days <= 800 ? 'month' : 'year';
+
+  const students = new Set(rows.map((r) => r.studentId));
+  const totalMin = rows.reduce((a, r) => a + (r.open ? 0 : r.min), 0);
+  const completed = rows.filter((r) => !r.open).length;
+  const summary = { visits: rows.length, open: rows.length - completed, totalMin, students: students.size, avgMin: completed ? Math.round(totalMin / completed) : 0 };
+
+  if (group === 'visit') {
+    rows.sort((a, b) => (a.in < b.in ? 1 : a.in > b.in ? -1 : 0));
+    return { group, days, summary, total: rows.length, rows: rows.slice(0, MAX_VIEW_ROWS), all: rows };
+  }
+  const buckets = new Map();
+  for (const r of rows) {
+    if (r.open) continue;
+    const p = periodOf(r.date, group);
+    const k = `${p.key}|${r.studentId}`;
+    let b = buckets.get(k);
+    if (!b) { b = { period: p.key, start: p.start, label: p.label, studentId: r.studentId, name: r.name, grade: r.grade, visits: 0, totalMin: 0, auto: 0 }; buckets.set(k, b); }
+    b.visits++; b.totalMin += r.min; if (r.auto) b.auto++; b.name = r.name; b.grade = r.grade;
+  }
+  const agg = [...buckets.values()].map((b) => Object.assign(b, { avgMin: Math.round(b.totalMin / b.visits) }));
+  agg.sort((a, b) => (a.period < b.period ? 1 : a.period > b.period ? -1 : a.name.localeCompare(b.name)));
+  return { group, days, summary, total: agg.length, rows: agg.slice(0, MAX_VIEW_ROWS), all: agg };
+}
+
+function fmtMin(min) { const hh = Math.floor(min / 60), mm = min % 60; return hh ? (mm ? `${hh}h ${mm}m` : `${hh}h`) : `${mm} min`; }
+function fmtClock(iso) { const d = new Date(iso); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; }
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function historyCsv(q) {
+  const r = queryHistory(q);
+  const rows = [];
+  if (r.group === 'visit') {
+    rows.push(['Date', 'Weekday', 'Student', 'Grade', 'Check in', 'Check out', 'Minutes', 'Stayed', 'Scheduled in', 'Scheduled out', 'Note']);
+    for (const v of r.all) {
+      const note = v.open ? 'Still here' : v.auto ? 'No check-out recorded; closed at scheduled time' : v.src === 'admin' ? 'Checked out by teacher' : '';
+      rows.push([v.date, WEEKDAYS[new Date(`${v.date}T12:00:00`).getDay()], v.name, v.grade || '', fmtClock(v.in), v.out ? fmtClock(v.out) : '', v.open ? '' : v.min, v.open ? '' : fmtMin(v.min), v.schedIn, v.schedOut, note]);
+    }
+  } else {
+    rows.push(['Period', 'Period start', 'Student', 'Grade', 'Visits', 'Total minutes', 'Total time', 'Average minutes', 'Visits without check-out']);
+    for (const b of r.all) rows.push([b.label, b.start, b.name, b.grade || '', b.visits, b.totalMin, fmtMin(b.totalMin), b.avgMin, b.auto]);
+  }
+  return { group: r.group, body: rows.map((x) => x.map(csvCell).join(',')).join('\r\n') + '\r\n' };
 }
 
 // ---------------------------------------------------------------- helpers
@@ -240,10 +401,13 @@ function getSession(req) {
   return t;
 }
 setInterval(() => {
-  const now = Date.now();
-  let changed = false;
-  for (const [t, e] of Object.entries(data.sessions)) if (e < now) { delete data.sessions[t]; changed = true; }
-  if (changed) save();
+  try {
+    const now = Date.now();
+    let changed = false;
+    for (const [t, e] of Object.entries(data.sessions)) if (e < now) { delete data.sessions[t]; changed = true; }
+    if (changed) save();
+    closeStaleDays();
+  } catch (err) { console.error('housekeeping failed:', err.message); }
 }, 60000).unref();
 
 const loginFails = new Map(); // ip -> {count, resetAt}
@@ -388,23 +552,26 @@ function recordEvent(student, action, source) {
   const iso = now.toISOString();
   if (action === 'in') {
     if (rec.in && !rec.out) return { error: `${student.name} is already checked in.` };
-    rec.in = iso; rec.out = null; rec.dismissed = false;
-    day[student.id] = rec;
+    if (rec.out) archiveRecord(student.id, key, rec); // second visit the same day: keep the first one
+    // snapshot name/schedule so the permanent record is right even if the student is edited later
+    day[student.id] = { in: iso, out: null, dismissed: false, name: student.name, grade: student.grade, schedIn: student.inTime, schedOut: student.outTime };
   } else if (action === 'out') {
     if (!rec.in || rec.out) return { error: `${student.name} is not checked in.` };
-    rec.out = iso;
+    rec.out = iso; rec.outSrc = source;
     day[student.id] = rec;
+    archiveRecord(student.id, key, rec);
   } else if (action === 'clear') {
-    // Undo a mistaken check-in (e.g. a student tapped the wrong name). Removes today's record.
-    if (!day[student.id]) return { error: `${student.name} has no record today.` };
+    // Undo a mistaken check-in (e.g. a student tapped the wrong name). Only an open visit can be undone.
+    if (!rec.in || rec.out) return { error: `${student.name} is not checked in.` };
     delete day[student.id];
   } else if (action === 'dismiss') {
     // Remove from the live board. A student who is still checked in is checked out first,
     // so the attendance record always has a check-out time.
     if (!rec.in) return { error: `${student.name} has not checked in today.` };
     if (!rec.out) {
-      rec.out = iso;
+      rec.out = iso; rec.outSrc = source;
       data.log.push({ ts: iso, studentId: student.id, name: student.name, grade: student.grade, type: 'out', source });
+      archiveRecord(student.id, key, rec);
     }
     rec.dismissed = true;
     day[student.id] = rec;
@@ -546,8 +713,11 @@ async function handle(req, res) {
         return json(res, 200, { ok: true, student: s });
       }
       if (m === 'DELETE') {
+        // Past visits stay in the history files (under the student's name) so reports remain complete.
+        for (const [dateKey, day] of Object.entries(data.attendance)) {
+          if (day[s.id]) { archiveRecord(s.id, dateKey, day[s.id]); delete day[s.id]; }
+        }
         data.students = data.students.filter((x) => x.id !== s.id);
-        for (const day of Object.values(data.attendance)) delete day[s.id];
         save();
         return json(res, 200, { ok: true });
       }
@@ -574,23 +744,22 @@ async function handle(req, res) {
       return json(res, 200, { ok: true }, { 'Set-Cookie': cookieHeader(req, 'sid', t) });
     }
 
-    if (m === 'GET' && p === '/api/admin/export.csv') {
+    if (m === 'GET' && (p === '/api/admin/history' || p === '/api/admin/export.csv')) {
       const today = localDateKey(new Date());
-      const from = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('from') || '') ? url.searchParams.get('from') : today;
-      const to = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('to') || '') ? url.searchParams.get('to') : today;
-      const rows = [['Date', 'Time', 'Student', 'Grade', 'Event', 'Source']];
-      for (const e of data.log) {
-        const d = new Date(e.ts);
-        const dk = localDateKey(d);
-        if (dk < from || dk > to) continue;
-        const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
-        const ev = e.type === 'in' ? 'Check in' : e.type === 'out' ? 'Check out' : 'Cleared';
-        rows.push([dk, time, e.name, e.grade || '', ev, e.source]);
+      const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v || '') && !Number.isNaN(new Date(`${v}T12:00:00`).getTime());
+      let from = isDate(url.searchParams.get('from')) ? url.searchParams.get('from') : today;
+      let to = isDate(url.searchParams.get('to')) ? url.searchParams.get('to') : today;
+      if (from > to) [from, to] = [to, from];
+      const studentId = /^[A-Za-z0-9_-]{1,40}$/.test(url.searchParams.get('student') || '') ? url.searchParams.get('student') : '';
+      const group = url.searchParams.get('group') || 'auto';
+      if (p === '/api/admin/history') {
+        const r = queryHistory({ from, to, studentId, group });
+        return json(res, 200, { from, to, group: r.group, days: r.days, summary: r.summary, total: r.total, rows: r.rows, truncated: r.total > r.rows.length });
       }
-      const body = rows.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+      const { group: g, body } = historyCsv({ from, to, studentId, group });
       return send(res, 200, body, {
         'Content-Type': 'text/csv; charset=utf-8',
-        'Content-Disposition': `attachment; filename="kumon-attendance-${from}_to_${to}.csv"`,
+        'Content-Disposition': `attachment; filename="kumon-attendance-${from}_to_${to}-by-${g}.csv"`,
         'Cache-Control': 'no-store',
       });
     }
@@ -655,6 +824,7 @@ function start() {
       console.log('  FIRST RUN: open the localhost admin link above ON THIS COMPUTER to create the admin password.');
     }
     console.log(`  Data file: ${DATA_FILE}  (daily backups in ${BACKUP_DIR})`);
+    console.log(`  Visit history: ${HISTORY_DIR}  (${history.length} visits on record)`);
     console.log('');
   });
 }
@@ -662,5 +832,10 @@ function start() {
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => { try { save(); } catch (_) {} process.exit(0); });
 }
+// Never let one unexpected error take the check-in system down mid-class; log it and carry on.
+process.on('uncaughtException', (err) => { console.error('Unexpected error (server kept running):', err); });
+process.on('unhandledRejection', (err) => { console.error('Unexpected error (server kept running):', err); });
 
+try { loadHistory(); } catch (err) { console.error('Could not read history files:', err.message); }
+try { closeStaleDays(); } catch (err) { console.error('Could not close old visits:', err.message); }
 start();

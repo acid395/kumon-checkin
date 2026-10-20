@@ -14,7 +14,7 @@
   <nav class="tabs hidden" id="tabs">
     <a href="#board" data-route="board">Live board</a>
     <a href="#students" data-route="students">Students</a>
-    <a href="#activity" data-route="activity">Activity</a>
+    <a href="#activity" data-route="activity">Records</a>
     <a href="#settings" data-route="settings">Settings</a>
   </nav>
   <span class="spacer"></span>
@@ -68,17 +68,27 @@
   </section>
 
   <section id="page-activity" class="page hidden">
-    <div class="pagehead"><h2>Activity</h2></div>
-    <div class="panel">
-      <h3>Export attendance (CSV)</h3>
+    <div class="pagehead"><h2>Records</h2><div class="stats" id="hist-stats"></div></div>
+    <div class="panel filters">
+      <div class="presets" id="hist-presets"></div>
       <div class="row">
-        <label class="field">From<input id="exp-from" class="input" type="date"></label>
-        <label class="field">To<input id="exp-to" class="input" type="date"></label>
+        <label class="field">From<input id="hist-from" class="input" type="date"></label>
+        <label class="field">To<input id="hist-to" class="input" type="date"></label>
+        <label class="field">Student<select id="hist-student" class="input"></select></label>
+        <label class="field">Show<select id="hist-group" class="input">
+          <option value="auto">Automatic</option>
+          <option value="visit">Each visit</option>
+          <option value="week">By week</option>
+          <option value="month">By month</option>
+          <option value="year">By year</option>
+        </select></label>
         <label class="field">&nbsp;<button id="btn-export" class="btn btn-primary w-full" type="button">Download CSV</button></label>
       </div>
     </div>
-    <h3 class="sec">Today</h3>
-    <table class="log"><thead><tr><th>Time</th><th>Student</th><th>Event</th><th>From</th></tr></thead><tbody id="log"></tbody></table>
+    <p id="hist-note" class="help"></p>
+    <div class="tablewrap"><table class="log" id="hist-table"><thead id="hist-head"></thead><tbody id="hist-body"></tbody></table></div>
+    <h3 class="sec">Today's events</h3>
+    <div class="tablewrap"><table class="log"><thead><tr><th>Time</th><th>Student</th><th>Event</th><th>From</th></tr></thead><tbody id="log"></tbody></table></div>
   </section>
 
   <section id="page-settings" class="page hidden">

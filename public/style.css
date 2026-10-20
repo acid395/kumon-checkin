@@ -239,6 +239,22 @@ table.log th, table.log td { padding: 11px 14px; text-align: left; border-bottom
 table.log th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; background: var(--card-2); }
 table.log tr:last-child td { border-bottom: 0; }
 .ev-in { color: var(--green); font-weight: 700; } .ev-out { color: var(--blue); font-weight: 700; } .ev-clear { color: var(--muted); }
+.tablewrap { overflow-x: auto; border-radius: var(--radius); }
+.panel.filters .row > * { flex: 1 1 150px; }
+.panel.filters label.field { margin-bottom: 4px; }
+.presets { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+.preset { padding: 7px 13px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--card); color: var(--muted); font-weight: 600; font-size: 13px; }
+.preset.active { background: var(--brand); border-color: var(--brand); color: #fff; }
+@media (hover: hover) { .preset:not(.active):hover { color: var(--text); background: var(--card-2); } }
+table.log td.num, table.log th.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.log td.date { white-space: nowrap; color: var(--muted); font-weight: 600; }
+table.log tr.open td { background: color-mix(in srgb, var(--green-soft) 60%, var(--card)); }
+.who-cell { display: inline-flex; align-items: center; gap: 10px; white-space: nowrap; }
+.who-cell .avatar.sm { width: 30px; height: 30px; font-size: 11px; }
+.meter { position: relative; display: block; min-width: 140px; height: 22px; border-radius: 6px; background: var(--track); overflow: hidden; }
+.meter-fill { position: absolute; inset: 0 auto 0 0; background: color-mix(in srgb, var(--brand) 28%, transparent); border-radius: 6px; }
+.meter-txt { position: relative; display: block; line-height: 22px; padding: 0 8px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.t-amber { color: var(--amber); }
 code.url { display: block; padding: 12px 14px; border-radius: 12px; background: var(--card-2); border: 1px solid var(--line); word-break: break-all; font-size: 14px; user-select: all; }
 .addr { display: flex; flex-direction: column; gap: 8px; }
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 12px 18px; border-radius: 12px; font-weight: 600; z-index: 99; box-shadow: 0 10px 30px rgba(0,0,0,.3); animation: pop .18s ease; }
