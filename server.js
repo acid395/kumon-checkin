@@ -601,7 +601,6 @@ function adminState() {
   return {
     serverTime: new Date().toISOString(),
     today: key,
-    addresses: BEHIND_PROXY ? [] : lanAddresses().map((a) => `${TLS ? 'https' : 'http'}://${a}:${PORT}`),
     students: data.students,
     attendance: data.attendance[key] || {},
     log: data.log.filter((e) => localDateKey(new Date(e.ts)) === key).slice(-300).reverse(),
@@ -742,6 +741,16 @@ async function handle(req, res) {
       sessions.clear();
       const t = newSession();
       return json(res, 200, { ok: true }, { 'Set-Cookie': cookieHeader(req, 'sid', t) });
+    }
+
+    if (m === 'GET' && p === '/api/admin/backup') {
+      // Everything needed to rebuild the center's records. The password hash and logins are left out.
+      const body = JSON.stringify({ exported: new Date().toISOString(), version: data.version, students: data.students, attendance: data.attendance, log: data.log, visits: history }, null, 1);
+      return send(res, 200, body, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Disposition': `attachment; filename="kumon-backup-${localDateKey(new Date())}.json"`,
+        'Cache-Control': 'no-store',
+      });
     }
 
     if (m === 'GET' && (p === '/api/admin/history' || p === '/api/admin/export.csv')) {

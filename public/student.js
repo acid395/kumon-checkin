@@ -9,8 +9,6 @@ const modalRoot = document.getElementById('modal-root');
 Clock.start(document.getElementById('clock'));
 document.getElementById('searchwrap').prepend(icon('search'));
 document.getElementById('staff-link').prepend(icon('lock'));
-function updateGreeting() { document.getElementById('greeting').textContent = `${greeting(Clock.now())}!`; }
-updateGreeting(); setInterval(updateGreeting, 60000);
 
 const offlineBar = document.getElementById('offline');
 function setOffline(on) { offlineBar.classList.toggle('hidden', !on); }

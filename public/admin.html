@@ -59,41 +59,34 @@
   </section>
 
   <section id="page-students" class="page hidden">
-    <div class="pagehead"><h2>Students</h2><span class="help" id="student-count"></span></div>
-    <div class="panel" id="add-panel"></div>
+    <div class="pagehead"><h2>Students</h2><span class="help" id="student-count"></span><span class="spacer"></span><button id="btn-add" class="btn btn-primary" type="button">Add student</button></div>
     <div class="toolbar">
-      <input id="filter" class="input" type="search" placeholder="Filter students…" autocomplete="off">
+      <input id="filter" class="input" type="search" placeholder="Search students" autocomplete="off">
     </div>
     <div id="student-list" class="list"></div>
   </section>
 
   <section id="page-activity" class="page hidden">
-    <div class="pagehead"><h2>Records</h2><div class="stats" id="hist-stats"></div></div>
+    <div class="pagehead"><h2>Records</h2></div>
     <div class="panel filters">
       <div class="presets" id="hist-presets"></div>
       <div class="row">
         <label class="field">From<input id="hist-from" class="input" type="date"></label>
         <label class="field">To<input id="hist-to" class="input" type="date"></label>
         <label class="field">Student<select id="hist-student" class="input"></select></label>
-        <label class="field">Show<select id="hist-group" class="input">
-          <option value="auto">Automatic</option>
-          <option value="visit">Each visit</option>
-          <option value="week">By week</option>
-          <option value="month">By month</option>
-          <option value="year">By year</option>
-        </select></label>
         <label class="field">&nbsp;<button id="btn-export" class="btn btn-primary w-full" type="button">Download CSV</button></label>
       </div>
     </div>
+    <div class="tablebar">
+      <div class="stats" id="hist-stats"></div>
+      <div class="seg" id="hist-group" role="group" aria-label="Group by"><span class="seg-label">Group by</span></div>
+    </div>
     <p id="hist-note" class="help"></p>
     <div class="tablewrap"><table class="log" id="hist-table"><thead id="hist-head"></thead><tbody id="hist-body"></tbody></table></div>
-    <h3 class="sec">Today's events</h3>
-    <div class="tablewrap"><table class="log"><thead><tr><th>Time</th><th>Student</th><th>Event</th><th>From</th></tr></thead><tbody id="log"></tbody></table></div>
   </section>
 
   <section id="page-settings" class="page hidden">
     <div class="pagehead"><h2>Settings</h2></div>
-    <div class="panel" id="address-panel"></div>
     <div class="panel" id="password-panel"></div>
     <div class="panel" id="backup-panel"></div>
   </section>

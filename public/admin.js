@@ -14,7 +14,7 @@ const IN_TIMES = timeRange(15 * 60 + 30, 19 * 60);            // check-in: 3:30 
 const OUT_TIMES = timeRange(16 * 60, 19 * 60 + 30);           // check-out: 4:00 PM .. 7:30 PM every 30 min
 const ROUTES = ['board', 'students', 'activity', 'settings'];
 
-const state = { students: [], attendance: {}, log: [], addresses: [], filter: '', boardSig: '', studentsSig: '', statsSig: '' };
+const state = { students: [], attendance: {}, log: [], filter: '', boardSig: '', studentsSig: '', statsSig: '', expSig: '', expOpen: false };
 $('link-student').prepend(icon('external'));
 
 Clock.start($('clock'));
@@ -78,7 +78,7 @@ $('btn-logout').addEventListener('click', async () => {
 
 function enterApp() {
   show('app');
-  state.boardSig = ''; state.studentsSig = ''; state.statsSig = '';
+  state.boardSig = ''; state.studentsSig = ''; state.statsSig = ''; state.expSig = '';
   refresh().then(renderPage);
   startPolling();
 }
@@ -98,7 +98,6 @@ async function refresh() {
   state.students = r.data.students;
   state.attendance = r.data.attendance;
   state.log = r.data.log;
-  state.addresses = r.data.addresses || [];
   renderCurrent();
 }
 
@@ -171,8 +170,8 @@ function renderBoard(force) {
   if (force || statsSig !== state.statsSig) { // rebuilt only when the numbers change, so the button is never replaced under a tap
     state.statsSig = statsSig;
     const stats = clear($('board-stats'));
-    const chip = (label, v) => h('span', { class: 'chip' }, h('b', {}, String(v)), ` ${label}`);
-    stats.append(chip('here now', n('in')), chip("time's up", n('over')), chip('checked out', n('done')));
+    const part = (v, label, cls) => h('span', { class: v && cls ? cls : '' }, h('b', {}, String(v)), ` ${label}`);
+    stats.append(part(n('in'), 'here'), ' · ', part(n('over'), "time's up", 't-red'), ' · ', part(n('done'), 'checked out'));
     if (finished.length >= 2) {
       stats.appendChild(h('button', { class: 'btn btn-sm btn-ghost', type: 'button', onclick: async () => {
         for (const r of finished) await api('POST', '/api/admin/attendance', { studentId: r.s.id, action: 'dismiss' });
@@ -185,14 +184,21 @@ function renderBoard(force) {
   const expected = state.students
     .filter((s) => s.days.includes(now.getDay()) && !(state.attendance[s.id] && state.attendance[s.id].in))
     .sort((a, b) => a.inTime.localeCompare(b.inTime) || a.name.localeCompare(b.name));
-  const exp = clear($('board-expected'));
-  if (expected.length) {
-    exp.append(
-      h('h3', { class: 'sec' }, `Expected today (${expected.length})`),
-      h('div', { class: 'expected' }, expected.map((s) => {
-        const late = now > todayAt(s.inTime, now);
-        return h('span', { class: `exp${late ? ' late' : ''}`, title: late ? 'Past their check-in time' : '' }, avatar(s.name, 'sm'), h('span', {}, s.name), h('span', { class: 'tm' }, fmtHHMM(s.inTime)));
-      })));
+  const expSig = expected.map((s) => s.id + (now > todayAt(s.inTime, now) ? 'L' : '')).join(',') + (state.expOpen ? '+' : '');
+  if (force || expSig !== state.expSig) {
+    state.expSig = expSig;
+    const exp = clear($('board-expected'));
+    if (expected.length) {
+      const late = expected.filter((s) => now > todayAt(s.inTime, now));
+      const shown = state.expOpen ? expected : expected.slice(0, 12);
+      exp.append(
+        h('h3', { class: 'sec' }, `Not here yet (${expected.length})`, late.length ? h('span', { class: 't-amber' }, ` · ${late.length} late`) : null),
+        h('div', { class: 'expected' }, shown.map((s) => {
+          const isLate = now > todayAt(s.inTime, now);
+          return h('span', { class: `exp${isLate ? ' late' : ''}` }, s.name, h('span', { class: 'tm' }, fmtHHMM(s.inTime)));
+        }),
+        expected.length > 12 ? h('button', { class: 'linkbtn', type: 'button', onclick: () => { state.expOpen = !state.expOpen; renderBoard(true); } }, state.expOpen ? 'Show fewer' : `+ ${expected.length - 12} more`) : null));
+    }
   }
 
   const list = $('board-list');
@@ -214,9 +220,9 @@ function renderBoard(force) {
     else acts.push(h('button', { class: 'btn btn-sm btn-primary', type: 'button', onclick: () => attendance(s, 'dismiss') }, 'Remove'));
     list.appendChild(
       h('div', { class: `srow ${p.cls}${p.done ? ' done' : ''}`, 'data-id': s.id },
-        h('div', { class: 'who' }, avatar(s.name), h('div', {},
+        h('div', { class: 'who' },
           h('div', { class: 'nm' }, s.name),
-          h('div', { class: 'sub' }, [gradeLabel(s.grade), s.age != null ? `Age ${s.age}` : null].filter(Boolean).join(' · ')))),
+          h('div', { class: 'sub' }, [gradeLabel(s.grade), s.age != null ? `Age ${s.age}` : null].filter(Boolean).join(' · '))),
         h('div', { class: 'sched' },
           h('div', {}, h('b', {}, `${fmtTime(rec.in)} → ${fmtHHMM(s.outTime)}`)),
           h('div', {}, todayAt(s.outTime, now) > new Date(rec.in) ? `${fmtDur(todayAt(s.outTime, now) - new Date(rec.in))} session` : 'Arrived after check-out time')),
@@ -242,10 +248,7 @@ function updateBar(row, p) {
 // ---------------------------------------------------------------- students page
 
 function renderStudents(force) {
-  const panel = $('add-panel');
-  if (!panel.firstChild) {
-    panel.append(h('h3', {}, 'Add a student'), studentForm(null, () => { toast('Student added'); refresh(); }));
-  }
+
   const q = state.filter.trim().toLowerCase();
   const now = Clock.now();
   const list = $('student-list');
@@ -276,9 +279,9 @@ function renderStudents(force) {
     }
     list.appendChild(
       h('div', { class: 'srow simple' },
-        h('div', { class: 'who' }, avatar(s.name), h('div', {},
+        h('div', { class: 'who' },
           h('div', { class: 'nm' }, s.name),
-          h('div', { class: 'sub' }, [gradeLabel(s.grade), s.age != null ? `Age ${s.age}` : null, s.notes || null].filter(Boolean).join(' · ')))),
+          h('div', { class: 'sub' }, [gradeLabel(s.grade), s.age != null ? `Age ${s.age}` : null, s.notes || null].filter(Boolean).join(' · '))),
         h('div', { class: 'sched' },
           h('div', {}, h('b', {}, `${fmtHHMM(s.inTime)} – ${fmtHHMM(s.outTime)}`), ` · ${fmtDur(todayAt(s.outTime, now) - todayAt(s.inTime, now))}`),
           h('div', {}, s.days.map((d) => DAY_NAMES[d]).join(' & ')),
@@ -287,6 +290,7 @@ function renderStudents(force) {
   }
 }
 
+$('btn-add').addEventListener('click', () => openModal(h('div', {}, h('h2', {}, 'Add student'), studentForm(null, () => { closeModal(); toast('Student added'); refresh(); }))));
 $('filter').addEventListener('input', (e) => { state.filter = e.target.value; renderStudents(true); });
 
 function select(options, value) {
@@ -332,7 +336,7 @@ function studentForm(existing, onSaved) {
     err,
     h('div', { class: 'actions' },
       existing ? h('button', { class: 'btn btn-danger', type: 'button', onclick: remove }, 'Delete') : null,
-      existing ? h('button', { class: 'btn', type: 'button', onclick: closeModal }, 'Cancel') : null,
+      h('button', { class: 'btn', type: 'button', onclick: closeModal }, 'Cancel'),
       h('button', { class: 'btn btn-primary', type: 'submit' }, existing ? 'Save changes' : 'Add student')));
 
   async function submit(e) {
@@ -345,7 +349,6 @@ function studentForm(existing, onSaved) {
     };
     const r = existing ? await api('PUT', `/api/admin/students/${existing.id}`, body) : await api('POST', '/api/admin/students', body);
     if (!r.ok) { err.textContent = r.data.error || 'Could not save.'; return; }
-    if (!existing) { name.value = ''; grade.value = ''; age.value = ''; notes.value = ''; name.focus(); }
     onSaved(r.data.student);
   }
   async function remove() {
@@ -379,17 +382,19 @@ function initRecords() {
   if (presets.firstChild) return;
   for (const [key, label] of [['today', 'Today'], ['week', 'This week'], ['month', 'This month'], ['year', 'This year'], ['all', 'Last 3 years']]) {
     presets.appendChild(h('button', { class: 'preset', type: 'button', 'data-preset': key, onclick: () => {
-      [hist.from, hist.to] = presetRange(key, Clock.now()); hist.preset = key;
+      [hist.from, hist.to] = presetRange(key, Clock.now()); hist.preset = key; hist.group = 'auto';
       $('hist-from').value = hist.from; $('hist-to').value = hist.to;
       loadRecords();
     } }, label));
   }
   [hist.from, hist.to] = presetRange('month', Clock.now());
   $('hist-from').value = hist.from; $('hist-to').value = hist.to;
-  const onDates = () => { hist.from = $('hist-from').value || hist.from; hist.to = $('hist-to').value || hist.to; hist.preset = ''; loadRecords(); };
+  const onDates = () => { hist.from = $('hist-from').value || hist.from; hist.to = $('hist-to').value || hist.to; hist.preset = ''; hist.group = 'auto'; loadRecords(); };
   $('hist-from').addEventListener('change', onDates); $('hist-to').addEventListener('change', onDates);
   $('hist-student').addEventListener('change', (e) => { hist.student = e.target.value; loadRecords(); });
-  $('hist-group').addEventListener('change', (e) => { hist.group = e.target.value; loadRecords(); });
+  for (const [key, label] of [['visit', 'Each visit'], ['week', 'Week'], ['month', 'Month'], ['year', 'Year']]) {
+    $('hist-group').appendChild(h('button', { type: 'button', 'data-group': key, onclick: () => { hist.group = key; loadRecords(); } }, label));
+  }
   $('btn-export').addEventListener('click', () => { location.href = `/api/admin/export.csv?${recordParams()}`; });
 }
 
@@ -425,15 +430,13 @@ async function loadRecords() {
 }
 
 function renderRecords(d) {
+  const sum = d.summary;
   const stats = clear($('hist-stats'));
-  const chip = (v, label) => h('span', { class: 'chip' }, h('b', {}, String(v)), ` ${label}`);
-  stats.append(chip(d.summary.visits.toLocaleString(), d.summary.visits === 1 ? 'visit' : 'visits'), chip(fmtHours(d.summary.totalMin), 'total'), chip(d.summary.students, d.summary.students === 1 ? 'student' : 'students'), chip(d.summary.avgMin ? fmtDur(d.summary.avgMin * 60000) : '–', 'average stay'));
-
-  const GROUP_WORD = { visit: 'each visit', week: 'week', month: 'month', year: 'year' };
-  const notes = [];
-  if (hist.group === 'auto' && d.group !== 'visit') notes.push(`Grouped by ${GROUP_WORD[d.group]} because the range is ${d.days} days. Choose "Each visit" to see every visit, or download the CSV.`);
-  if (d.truncated) notes.push(`Showing the first ${d.rows.length} of ${d.total} rows. The CSV download includes all of them.`);
-  $('hist-note').textContent = notes.join(' ');
+  const part = (v, label) => h('span', {}, h('b', {}, String(v)), ` ${label}`);
+  stats.append(part(sum.visits.toLocaleString(), sum.visits === 1 ? 'visit' : 'visits'), ' · ', part(fmtHours(sum.totalMin), 'in total'), ' · ',
+    part(sum.students, sum.students === 1 ? 'student' : 'students'), ' · ', part(sum.avgMin ? fmtDur(sum.avgMin * 60000) : '–', 'average'));
+  for (const b of $('hist-group').children) b.classList.toggle('active', b.dataset.group === d.group);
+  $('hist-note').textContent = d.truncated ? `Showing ${d.rows.length.toLocaleString()} of ${d.total.toLocaleString()} rows. The CSV has all of them.` : '';
 
   const head = clear($('hist-head')), body = clear($('hist-body'));
   if (!d.rows.length) {
@@ -447,10 +450,10 @@ function renderRecords(d) {
     for (const v of d.rows) {
       const dateCell = v.date === lastDate ? '' : new Date(`${v.date}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: v.date.slice(0, 4) === d.to.slice(0, 4) ? undefined : 'numeric' });
       lastDate = v.date;
-      const note = v.open ? ['Still here', 't-green'] : v.auto ? ['No check-out · closed at scheduled time', 't-amber'] : v.src === 'admin' ? ['Checked out by teacher', 't-muted'] : ['', ''];
+      const note = v.open ? ['Still here', 't-green'] : v.auto ? ['No check-out', 't-amber'] : v.src === 'admin' ? ['Checked out by teacher', 't-muted'] : ['', ''];
       body.appendChild(h('tr', { class: v.open ? 'open' : '' },
         h('td', { class: 'date' }, dateCell),
-        h('td', {}, h('span', { class: 'who-cell' }, avatar(v.name, 'sm'), h('span', {}, h('b', {}, v.name), v.grade ? h('span', { class: 't-muted' }, ` · ${gradeLabel(v.grade)}`) : null))),
+        h('td', {}, nameCell(v)),
         h('td', { class: 'num' }, fmtTime(v.in)),
         h('td', { class: 'num' }, v.out ? fmtTime(v.out) : '—'),
         h('td', { class: 'num' }, v.open ? h('span', { class: 't-green' }, `${fmtDur(v.min * 60000)} so far`) : fmtDur(v.min * 60000)),
@@ -464,7 +467,7 @@ function renderRecords(d) {
       const periodCell = b.period === lastPeriod ? '' : b.label; lastPeriod = b.period;
       body.appendChild(h('tr', {},
         h('td', { class: 'date' }, periodCell),
-        h('td', {}, h('span', { class: 'who-cell' }, avatar(b.name, 'sm'), h('span', {}, h('b', {}, b.name), b.grade ? h('span', { class: 't-muted' }, ` · ${gradeLabel(b.grade)}`) : null))),
+        h('td', {}, nameCell(b)),
         h('td', { class: 'num' }, String(b.visits)),
         h('td', {}, h('span', { class: 'meter' }, h('span', { class: 'meter-fill', style: { width: `${Math.round((b.totalMin / maxMin) * 100)}%` } }), h('span', { class: 'meter-txt' }, fmtHours(b.totalMin, maxMin)))),
         h('td', { class: 'num' }, fmtDur(b.avgMin * 60000)),
@@ -473,26 +476,25 @@ function renderRecords(d) {
   }
 }
 
-// Called every 3 s while the page is open: today's event table always, the records table only when something changed.
+// Student name in a records row. Clicking it narrows the view to that student (if they still exist).
+function nameCell(r) {
+  const label = [h('b', {}, r.name), r.grade ? h('span', { class: 't-muted' }, ` · ${gradeLabel(r.grade)}`) : null];
+  if (hist.student || !state.students.some((s) => s.id === r.studentId)) return h('span', {}, label);
+  return h('button', { class: 'namebtn', type: 'button', title: `Only ${r.name}`, onclick: () => { hist.student = r.studentId; $('hist-student').value = r.studentId; loadRecords(); } }, label);
+}
+
+// Called every 3 s while the page is open; reloads the table only when something changed.
 function renderActivity() {
   initRecords();
   fillStudentFilter();
-  const logSig = state.log.length ? `${state.log.length}:${state.log[0].ts}` : '0';
-  if (logSig !== hist.logSig) { hist.logSig = logSig; }
+  hist.logSig = state.log.length ? `${state.log.length}:${state.log[0].ts}` : '0';
   if (!hist.loading && hist.sig !== recordParams() + ':' + hist.logSig) loadRecords();
-
-  const tb = clear($('log'));
-  if (!state.log.length) { tb.appendChild(h('tr', {}, h('td', { colspan: 4, class: 't-muted' }, 'Nothing yet today.'))); return; }
-  for (const e of state.log) {
-    const ev = e.type === 'in' ? ['Checked in', 'ev-in'] : e.type === 'out' ? ['Checked out', 'ev-out'] : ['Check-in undone', 'ev-clear'];
-    tb.appendChild(h('tr', {}, h('td', {}, fmtTime(e.ts)), h('td', {}, e.name), h('td', { class: ev[1] }, ev[0]), h('td', { class: 't-muted' }, e.source === 'student' ? 'student page' : e.source === 'admin' ? 'teacher' : e.source)));
-  }
 }
 
 // Jump to one student's records from the Students page.
 function showRecordsFor(s) {
   initRecords();
-  hist.student = s.id; hist.preset = 'year'; [hist.from, hist.to] = presetRange('year', Clock.now());
+  hist.student = s.id; hist.preset = 'year'; hist.group = 'auto'; [hist.from, hist.to] = presetRange('year', Clock.now());
   $('hist-from').value = hist.from; $('hist-to').value = hist.to;
   location.hash = '#activity';
   fillStudentFilter(); $('hist-student').value = s.id;
@@ -502,18 +504,13 @@ function showRecordsFor(s) {
 // ---------------------------------------------------------------- settings page
 
 function renderSettings() {
-  const addr = clear($('address-panel'));
-  addr.append(
-    h('h3', {}, 'Addresses on your Wi-Fi'),
-    h('p', { class: 'help' }, 'Open these on the iPads and computers.'),
-    h('div', { class: 'addr' }, (state.addresses.length ? state.addresses : [location.origin]).flatMap((a) => [
-      h('code', { class: 'url' }, h('span', { class: 'muted' }, 'Students:  '), `${a}/`),
-      h('code', { class: 'url' }, h('span', { class: 'muted' }, 'Teachers:  '), `${a}/admin`)])));
-
-  const bk = clear($('backup-panel'));
-  bk.append(
-    h('h3', {}, 'Your data'),
-    h('p', { class: 'help' }, 'Saved in the "data" folder next to the program. Daily backups are kept for 30 days.'));
+  const bk = $('backup-panel');
+  if (!bk.firstChild) {
+    bk.append(
+      h('h3', {}, 'Backup'),
+      h('p', { class: 'help' }, 'Everything is saved automatically in the data folder, with daily copies kept for 30 days. Download a copy to keep on a USB drive or another computer.'),
+      h('a', { class: 'btn', href: '/api/admin/backup', download: '' }, 'Download backup'));
+  }
 
   if ($('password-panel').firstChild) return; // keep what the teacher is typing
   const current = h('input', { class: 'input', type: 'password', autocomplete: 'current-password', required: true });

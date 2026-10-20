@@ -149,7 +149,7 @@ itself after 8 seconds). When leaving, tap the card again and press **Check out*
   any date range, and optionally one student. Short ranges list each visit; long ranges are
   grouped by week, month or year per student (visits, total time, average). **Download CSV**
   exports what is shown. Visits with no check-out are closed at the scheduled time and marked.
-* **Settings**: change the admin password.
+* **Settings**: change the admin password and download a backup of all records.
 
 The admin login lasts 12 hours of inactivity.
 
