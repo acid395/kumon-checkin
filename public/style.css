@@ -249,3 +249,28 @@ table.log tr.open td { background: color-mix(in srgb, var(--green-soft) 55%, var
 
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 8px; font-weight: 550; font-size: 14px; z-index: 99; animation: fade .15s ease; }
 table.log td .namebtn, table.log td > span { white-space: nowrap; }
+
+/* ---- student form: class days, import dialog, attendance tags */
+div.field { font-size: 13px; color: var(--muted); font-weight: 550; margin-bottom: 14px; }
+.dayrows { display: flex; flex-direction: column; gap: 8px; margin-top: 5px; }
+.dayrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dayrow select.input { width: auto; flex: 0 1 130px; }
+.dayrow select.input:disabled { opacity: .45; }
+.daycheck { display: inline-flex; align-items: center; gap: 8px; min-width: 120px; padding: 9px 12px; border: 1px solid var(--line-2); border-radius: 8px; color: var(--text); font-weight: 550; background: var(--card); cursor: pointer; }
+.daycheck input { accent-color: var(--brand); width: 17px; height: 17px; margin: 0; }
+.modal.modal-wide { max-width: 860px; }
+.dropzone { border: 2px dashed var(--line-2); border-radius: 10px; padding: 28px 16px; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; background: var(--card-2); }
+.dropzone:hover, .dropzone.over, .dropzone:focus-visible { border-color: var(--brand); background: var(--blue-soft); outline: none; }
+.dropzone b { color: var(--brand); font-size: 16px; }
+.warnbox { border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--line)); background: var(--amber-soft); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; }
+.warnbox ul { margin: 6px 0 0; padding-left: 18px; max-height: 150px; overflow: auto; }
+.warnbox li { margin: 2px 0; }
+.importtable { max-height: 46vh; overflow: auto; }
+.importtable table.log th, .importtable table.log td { padding: 7px 12px; }
+.tag { display: inline-block; white-space: nowrap; padding: 1px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+.tag.green { background: var(--green-soft); color: var(--green); }
+.tag.amber { background: var(--amber-soft); color: var(--amber); }
+.tag.red { background: var(--red-soft); color: var(--red); }
+table.log tr.absent td { background: color-mix(in srgb, var(--red) 5%, var(--card)); }
+table.log td:last-child { white-space: nowrap; }
+#hist-table th, #hist-table td { padding: 10px 11px; }

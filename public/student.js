@@ -38,9 +38,15 @@ function matches(name, query) {
   return q.split(/\s+/).every((tok) => words.some((w) => w.startsWith(tok)) || n.includes(tok));
 }
 
+// Typing digits also finds a student by their ID (at least 3 characters, from the start of the ID).
+function matchesId(id, query) {
+  const q = query.trim().replace(/\s+/g, '');
+  return !!id && q.length >= 3 && id.toLowerCase().startsWith(q.toLowerCase());
+}
+
 function render() {
   clear(grid);
-  const list = state.students.filter((s) => matches(s.name, state.query));
+  const list = state.students.filter((s) => matches(s.name, state.query) || matchesId(s.kumonId, state.query));
   if (!state.loaded) return;
   if (!list.length) {
     grid.appendChild(h('div', { class: 'empty', style: { gridColumn: '1 / -1' } }, icon('people'),
@@ -54,13 +60,8 @@ function render() {
         avatar(s.name),
         h('span', { class: 'body' },
           h('span', { class: 'name' }, s.name),
-          h('span', { class: 'meta' }, s.grade ? h('span', { class: 'badge' }, gradeLabel(s.grade)) : null, h('span', { class: 'dot' }), h('span', { class: 'status-text' }, statusText)))));
+          h('span', { class: 'meta' }, s.kumonId ? h('span', { class: 'badge' }, `ID ${s.kumonId}`) : null, h('span', { class: 'dot' }), h('span', { class: 'status-text' }, statusText)))));
   }
-}
-
-function gradeLabel(g) {
-  if (/^\d+$/.test(g)) return `Grade ${g}`;
-  return g;
 }
 
 search.addEventListener('input', () => { state.query = search.value; render(); });
@@ -88,7 +89,7 @@ function openModal(s) {
     body.append(
       h('div', { class: 'who-head' }, avatar(s.name, 'lg'), h('div', {},
         h('h2', {}, s.name),
-        h('div', { class: 'sub', style: { marginBottom: '0' } }, [s.grade ? gradeLabel(s.grade) : null, s.status === 'in' ? `Checked in at ${fmtTime(s.since)}` : null].filter(Boolean).join(' · ')))),
+        h('div', { class: 'sub', style: { marginBottom: '0' } }, [s.kumonId ? `ID ${s.kumonId}` : null, s.status === 'in' ? `Checked in at ${fmtTime(s.since)}` : null].filter(Boolean).join(' · ')))),
       h('div', { class: 'actions' },
         h('button', { class: 'btn btn-lg', type: 'button', onclick: closeModal }, 'Cancel'),
         h('button', { class: `btn btn-lg ${action === 'in' ? 'btn-green' : 'btn-blue'}`, type: 'button', onclick: doAction, id: 'primary-action' }, action === 'in' ? 'Check in' : 'Check out')));

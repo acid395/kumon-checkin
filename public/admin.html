@@ -59,9 +59,9 @@
   </section>
 
   <section id="page-students" class="page hidden">
-    <div class="pagehead"><h2>Students</h2><span class="help" id="student-count"></span><span class="spacer"></span><button id="btn-add" class="btn btn-primary" type="button">Add student</button></div>
+    <div class="pagehead"><h2>Students</h2><span class="help" id="student-count"></span><span class="spacer"></span><button id="btn-import" class="btn" type="button">Import from file</button><button id="btn-add" class="btn btn-primary" type="button">Add student</button></div>
     <div class="toolbar">
-      <input id="filter" class="input" type="search" placeholder="Search students" autocomplete="off">
+      <input id="filter" class="input" type="search" placeholder="Search by name or student ID" autocomplete="off">
     </div>
     <div id="student-list" class="list"></div>
   </section>
@@ -74,6 +74,9 @@
         <label class="field">From<input id="hist-from" class="input" type="date"></label>
         <label class="field">To<input id="hist-to" class="input" type="date"></label>
         <label class="field">Student<select id="hist-student" class="input"></select></label>
+        <label class="field">Attendance<select id="hist-status" class="input">
+          <option value="">Everyone</option><option value="late">Late only</option><option value="absent">Absent only</option><option value="ontime">On time only</option>
+        </select></label>
         <label class="field">&nbsp;<button id="btn-export" class="btn btn-primary w-full" type="button">Download CSV</button></label>
       </div>
     </div>

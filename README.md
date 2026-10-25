@@ -111,14 +111,19 @@ On a Mac you can also double-click `start.command`.
 
 1. Log in at `http://localhost:8787/admin` with the password from step 3 above (or create it
    there if you started without `ADMIN_PASSWORD`).
-2. Go to **Students** and add each student: name, grade (dropdown), age (dropdown), optional
-   notes, check-in time (3:30 PM to 7:00 PM, every 30 minutes), check-out time (4:00 PM to
-   7:30 PM, every 30 minutes), and whether they come Monday, Thursday, or both. The session
-   length is calculated.
+2. Go to **Students** and press **Import from file** to add everyone from the class schedule.
+   It reads Excel (.xls or .xlsx), CSV, or a PDF printed from the spreadsheet, with the columns
+   StudentID, FirstName, LastName, Subject, Monday, Thursday (one row per subject, times like
+   `6:30pm` or `n/a`). Each student arrives at their first subject time and leaves 30 minutes
+   after their last subject starts. You see every student and any problems before anything is
+   saved. Importing again later updates students by their ID and never deletes anyone.
+3. Or add a student by hand with **Add student**: name, student ID, subjects, optional notes, and
+   a check-in and check-out time for Monday and for Thursday.
 
 ## 3. Daily use
 
-**Students** (main page `/`): type a few letters of their name, tap their card, tap **Check in**.
+**Students** (main page `/`): type a few letters of their name (or the start of their student
+ID), tap their card, tap **Check in**.
 The screen shows "You're checked in" with the time and a **Close** button (it also closes by
 itself after 8 seconds). When leaving, tap the card again and press **Check out**.
 
@@ -141,14 +146,21 @@ itself after 8 seconds). When leaving, tap the card again and press **Check out*
   check-out time first so the attendance record is complete. With two or more finished rows a
   **Remove all finished** link appears next to the counters. Under the board, **Expected today**
   lists who is scheduled but hasn't arrived, with their check-in time; anyone past it is marked
-  late in amber.
+  late in amber. A student who checks in after their time shows how late they were.
 * **Students**: add students with the form at the top; edit, delete, or check in below.
   If a student tapped the wrong name, **Undo check-in** removes that check-in.
-* **Records**: every visit, with check-in time, check-out time and how long the student
-  stayed, going back years. Pick Today / This week / This month / This year / Last 3 years or
-  any date range, and optionally one student. Short ranges list each visit; long ranges are
-  grouped by week, month or year per student (visits, total time, average). **Download CSV**
-  exports what is shown. Visits with no check-out are closed at the scheduled time and marked.
+* **Records**: every visit, with the exact check-in and check-out time (to the second), how
+  long the student stayed, and whether they were **on time**, **late** (and by how many
+  minutes), or **absent**, going back years. Pick Today / This week / This month / This year /
+  Last 3 years or any date range, one student, and Everyone / Late only / Absent only / On time
+  only. Short ranges list each visit; long ranges are grouped by week, month or year per
+  student (visits, late, absent, total time, average). **Download CSV** exports what is shown.
+  Visits with no check-out are closed at the scheduled time and marked.
+
+  Absences are filled in once a class day is over (30 minutes after the last scheduled
+  check-out): everyone scheduled that day who never checked in is marked absent. If nobody at
+  all checked in that day, it is treated as a day the center was closed and no one is marked
+  absent. Absences are counted from the day this version is first started, never backwards.
 * **Settings**: change the admin password and download a backup of all records.
 
 The admin login lasts 12 hours of inactivity.

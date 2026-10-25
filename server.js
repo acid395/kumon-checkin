@@ -9,8 +9,8 @@
  *  - All data lives in ./data/kumon-data.json (file mode 0600, directory 0700).
  *  - Admin pages require a password (scrypt-hashed). The password can only be
  *    created the first time from the server computer itself (localhost).
- *  - The student page (the site's main page) exposes only name, grade and in/out
- *    status — never age, notes or history.
+ *  - The student page (the site's main page) exposes only name, student ID and in/out
+ *    status — never notes, schedules or history.
  *  - HttpOnly + SameSite=Strict session cookies, login rate limiting,
  *    CSRF checks (custom header + Origin/Sec-Fetch-Site), strict CSP,
  *    no inline scripts, request body size limits, input validation.
@@ -23,6 +23,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
+const { parseSchedule, ImportError } = require('./importer');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -37,6 +38,8 @@ const PORT = Number(process.env.PORT) || 8787;
 const HOST = process.env.HOST || '0.0.0.0';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;      // admin login lasts 12h of inactivity
 const MAX_BODY_BYTES = 64 * 1024;
+const MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024;   // a schedule spreadsheet or PDF
+const MAX_IMPORT_JSON_BYTES = 2 * 1024 * 1024;   // the checked student list sent back to be saved
 const LOGIN_MAX_FAILS = 5;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const KEEP_RECENT_DAYS = 14;   // day records kept in the main file (completed visits live in history/)
@@ -112,8 +115,25 @@ function normalise(parsed) {
   const d = Object.assign(defaultData(), parsed);
   delete d.kioskKey; delete d.settings; // leftovers from earlier versions
   if (!d.sessions || typeof d.sessions !== 'object') d.sessions = {};
+  for (const s of d.students) migrateStudent(s);
   return d;
 }
+
+// Older versions kept one check-in/check-out time for every day plus grade and age.
+// Students now have a Kumon student ID, subjects, and their own times for each day.
+function migrateStudent(s) {
+  if (!s.sched || typeof s.sched !== 'object') {
+    s.sched = {};
+    for (const d of Array.isArray(s.days) ? s.days : []) if (s.inTime && s.outTime) s.sched[String(d)] = { in: s.inTime, out: s.outTime };
+  }
+  if (typeof s.kumonId !== 'string') s.kumonId = '';
+  if (!Array.isArray(s.subjects)) s.subjects = [];
+  if (typeof s.notes !== 'string') s.notes = '';
+  delete s.days; delete s.inTime; delete s.outTime; delete s.grade; delete s.age;
+  return s;
+}
+function schedOn(s, weekday) { return (s && s.sched && s.sched[String(weekday)]) || null; }
+function weekdayOf(dateKey) { return new Date(`${dateKey}T12:00:00`).getDay(); }
 
 function writeData(d) {
   ensureDirs(); // recreate folders if they went missing while running
@@ -156,12 +176,12 @@ if (!data.adminHash && process.env.ADMIN_PASSWORD) {
 }
 if (DEMO && data.students.length === 0) {
   const sample = [
-    ['Mia Chen', '3', 8, '15:30', '16:30'], ['Noah Patel', 'K', 5, '16:00', '17:00'],
-    ['Ava Rodriguez', '7', 12, '17:30', '19:00'], ['Liam Nguyen', '1', 6, '15:30', '16:00'],
-    ['Sofia Kim', '5', 10, '18:00', '19:30'], ['Ethan Brooks', 'Pre-K', 4, '16:30', '17:00'],
+    ['Mia Chen', '1000001', ['Math', 'Reading'], '15:30', '16:30'], ['Noah Patel', '1000002', ['Math'], '16:00', '16:30'],
+    ['Ava Rodriguez', '1000003', ['Reading'], '17:30', '18:00'], ['Liam Nguyen', '1000004', ['Math'], '15:30', '16:00'],
+    ['Sofia Kim', '1000005', ['Math', 'Reading'], '18:00', '19:00'], ['Ethan Brooks', '1000006', ['Reading'], '16:30', '17:00'],
   ];
-  for (const [name, grade, age, inTime, outTime] of sample) {
-    data.students.push({ id: randomToken(9), createdAt: new Date().toISOString(), name, grade, age, notes: '', inTime, outTime, days: [1, 4] });
+  for (const [name, kumonId, subjects, inTime, outTime] of sample) {
+    data.students.push({ id: randomToken(9), createdAt: new Date().toISOString(), name, kumonId, subjects, notes: '', sched: { 1: { in: inTime, out: outTime }, 4: { in: inTime, out: outTime } } });
   }
   writeData(data);
   console.log('  DEMO: added sample students.');
@@ -212,21 +232,33 @@ function appendVisit(v) {
 // Build the permanent record for a day record that has both in and out.
 function visitFrom(studentId, dateKey, rec) {
   const s = data.students.find((x) => x.id === studentId);
+  const sc = schedOn(s, weekdayOf(dateKey));
   const inAt = new Date(rec.in), outAt = new Date(rec.out);
-  return {
+  const v = {
     id: `${studentId}-${rec.in}`,
     date: dateKey,
     studentId,
     name: rec.name || (s && s.name) || 'Unknown',
-    grade: rec.grade ?? (s ? s.grade : ''),
+    kumonId: rec.kumonId ?? (s ? s.kumonId : ''),
     in: rec.in,
     out: rec.out,
     min: Math.max(0, Math.round((outAt - inAt) / 60000)),
-    schedIn: rec.schedIn || (s && s.inTime) || '',
-    schedOut: rec.schedOut || (s && s.outTime) || '',
+    schedIn: rec.schedIn ?? (sc ? sc.in : ''),
+    schedOut: rec.schedOut ?? (sc ? sc.out : ''),
     src: rec.outSrc || 'student',
     auto: !!rec.auto,
   };
+  v.lateMin = lateMinOf(v);
+  return v;
+}
+
+// Whole minutes between the scheduled check-in and the actual check-in (0 = on time).
+// null when the student had no scheduled time that day (a make-up visit, for example).
+function lateMinOf(v) {
+  if (v.kind === 'absent' || !v.in || !HHMM.test(v.schedIn || '')) return null;
+  if (typeof v.lateMin === 'number') return v.lateMin;
+  const due = new Date(`${v.date}T${v.schedIn}:00`);
+  return Math.max(0, Math.floor((new Date(v.in) - due) / 60000));
 }
 
 function archiveRecord(studentId, dateKey, rec) {
@@ -245,7 +277,8 @@ function closeStaleDays() {
     for (const [studentId, rec] of Object.entries(day)) {
       if (rec.in && !rec.out) {
         const s = data.students.find((x) => x.id === studentId);
-        const sched = rec.schedOut || (s && s.outTime) || '';
+        const sc = schedOn(s, weekdayOf(dateKey));
+        const sched = rec.schedOut || (sc && sc.out) || '';
         let outAt = HHMM.test(sched) ? new Date(`${dateKey}T${sched}:00`) : null;
         if (!outAt || !(outAt > new Date(rec.in))) outAt = new Date(new Date(rec.in).getTime() + 60000);
         rec.out = outAt.toISOString(); rec.auto = true; rec.outSrc = 'auto'; rec.dismissed = true;
@@ -253,6 +286,51 @@ function closeStaleDays() {
       }
       if (!rec.archived) { archiveRecord(studentId, dateKey, rec); changed = true; }
     }
+  }
+  if (changed) save();
+}
+
+// ---------------------------------------------------------------- absences
+//
+// Once a class day is over (30 minutes after the last scheduled check-out), every student who
+// was scheduled that day and never checked in gets an "absent" line in the history file.
+// A day where nobody at all checked in is taken as a day the center was closed (a holiday),
+// so no one is marked absent for it. data.absentDone is the last day already checked.
+function addDays(dateKey, n) { const d = new Date(`${dateKey}T12:00:00`); d.setDate(d.getDate() + n); return localDateKey(d); }
+function dayClosesAt(dateKey) {
+  const wd = weekdayOf(dateKey);
+  let last = '19:30';
+  for (const s of data.students) { const sc = schedOn(s, wd); if (sc && sc.out > last) last = sc.out; }
+  return new Date(new Date(`${dateKey}T${last}:00`).getTime() + 30 * 60000);
+}
+
+function markAbsences(now = new Date()) {
+  const today = localDateKey(now);
+  if (!data.absentDone) { data.absentDone = addDays(today, -1); save(); } // start counting from today, never back-fill
+  let d = addDays(data.absentDone, 1);
+  let presentByDay = null;
+  let changed = false;
+  for (let guard = 0; d <= today && guard < 1200; guard++, d = addDays(d, 1)) {
+    if (d === today && now < dayClosesAt(d)) break;
+    const wd = weekdayOf(d);
+    if (ALLOWED_DAYS.includes(wd)) {
+      if (!presentByDay) {
+        presentByDay = new Map();
+        for (const v of history) if (v.kind !== 'absent' && v.date > data.absentDone) { if (!presentByDay.has(v.date)) presentByDay.set(v.date, new Set()); presentByDay.get(v.date).add(v.studentId); }
+      }
+      const present = new Set(presentByDay.get(d) || []);
+      for (const [sid, rec] of Object.entries(data.attendance[d] || {})) if (rec.in) present.add(sid);
+      if (present.size) {
+        for (const s of data.students) {
+          const sc = schedOn(s, wd);
+          if (!sc || present.has(s.id)) continue;
+          const due = new Date(`${d}T${sc.in}:00`);
+          if (new Date(s.createdAt) > due) continue; // added after that class started
+          appendVisit({ id: `${s.id}-absent-${d}`, kind: 'absent', date: d, studentId: s.id, name: s.name, kumonId: s.kumonId || '', in: null, out: null, due: due.toISOString(), min: 0, schedIn: sc.in, schedOut: sc.out, src: '', auto: false, lateMin: null });
+        }
+      }
+    }
+    data.absentDone = d; changed = true;
   }
   if (changed) save();
 }
@@ -277,28 +355,48 @@ function periodOf(dateKey, group) {
 function fmtDateLabel(dateKey) { return new Date(`${dateKey}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
 function daysBetween(a, b) { return Math.round((new Date(`${b}T12:00:00`) - new Date(`${a}T12:00:00`)) / 86400000) + 1; }
 
-function queryHistory({ from, to, studentId, group }) {
+// status: '' (everything), 'late', 'absent', 'ontime'
+function queryHistory({ from, to, studentId, group, status }) {
   const today = localDateKey(new Date());
-  const rows = [];
-  for (const v of history) if (v.date >= from && v.date <= to && (!studentId || v.studentId === studentId)) rows.push(v);
+  let rows = [];
+  const present = new Set();
+  for (const v of history) {
+    if (v.date < from || v.date > to || (studentId && v.studentId !== studentId)) continue;
+    if (v.kind !== 'absent') present.add(`${v.studentId}|${v.date}`);
+    rows.push(v);
+  }
   // visits in progress right now (today only) so the Records page matches the board
   if (to >= today && from <= today) {
     for (const [sid, rec] of Object.entries(data.attendance[today] || {})) {
       if (!rec.in || rec.out || (studentId && sid !== studentId)) continue;
       const s = data.students.find((x) => x.id === sid);
-      rows.push({ id: `${sid}-${rec.in}`, date: today, studentId: sid, name: rec.name || (s && s.name) || 'Unknown', grade: rec.grade ?? (s ? s.grade : ''), in: rec.in, out: null, min: Math.max(0, Math.round((Date.now() - new Date(rec.in)) / 60000)), schedIn: rec.schedIn || (s && s.inTime) || '', schedOut: rec.schedOut || (s && s.outTime) || '', src: '', auto: false, open: true });
+      const sc = schedOn(s, weekdayOf(today));
+      const v = { id: `${sid}-${rec.in}`, date: today, studentId: sid, name: rec.name || (s && s.name) || 'Unknown', kumonId: rec.kumonId ?? (s ? s.kumonId : ''), in: rec.in, out: null, min: Math.max(0, Math.round((Date.now() - new Date(rec.in)) / 60000)), schedIn: rec.schedIn ?? (sc ? sc.in : ''), schedOut: rec.schedOut ?? (sc ? sc.out : ''), src: '', auto: false, open: true };
+      v.lateMin = lateMinOf(v);
+      present.add(`${sid}|${today}`);
+      rows.push(v);
     }
   }
+  // an absence is dropped if the student did turn up that day after all
+  rows = rows.filter((r) => r.kind !== 'absent' || !present.has(`${r.studentId}|${r.date}`));
+  const isLate = (r) => r.kind !== 'absent' && (r.lateMin ?? lateMinOf(r)) > 0;
+  if (status === 'late') rows = rows.filter(isLate);
+  else if (status === 'absent') rows = rows.filter((r) => r.kind === 'absent');
+  else if (status === 'ontime') rows = rows.filter((r) => r.kind !== 'absent' && !isLate(r));
+
   const days = daysBetween(from, to);
   if (!['visit', 'week', 'month', 'year'].includes(group)) group = days <= 35 ? 'visit' : days <= 190 ? 'week' : days <= 800 ? 'month' : 'year';
 
+  const visits = rows.filter((r) => r.kind !== 'absent');
   const students = new Set(rows.map((r) => r.studentId));
-  const totalMin = rows.reduce((a, r) => a + (r.open ? 0 : r.min), 0);
-  const completed = rows.filter((r) => !r.open).length;
-  const summary = { visits: rows.length, open: rows.length - completed, totalMin, students: students.size, avgMin: completed ? Math.round(totalMin / completed) : 0 };
+  const totalMin = visits.reduce((a, r) => a + (r.open ? 0 : r.min), 0);
+  const completed = visits.filter((r) => !r.open).length;
+  const summary = { visits: visits.length, open: visits.length - completed, late: visits.filter(isLate).length, absent: rows.length - visits.length, totalMin, students: students.size, avgMin: completed ? Math.round(totalMin / completed) : 0 };
 
   if (group === 'visit') {
-    rows.sort((a, b) => (a.in < b.in ? 1 : a.in > b.in ? -1 : 0));
+    const at = (r) => r.in || r.due || r.date;
+    for (const r of rows) if (r.kind !== 'absent' && r.lateMin == null) r.lateMin = lateMinOf(r);
+    rows.sort((a, b) => (at(a) < at(b) ? 1 : at(a) > at(b) ? -1 : 0));
     return { group, days, summary, total: rows.length, rows: rows.slice(0, MAX_VIEW_ROWS), all: rows };
   }
   const buckets = new Map();
@@ -307,30 +405,35 @@ function queryHistory({ from, to, studentId, group }) {
     const p = periodOf(r.date, group);
     const k = `${p.key}|${r.studentId}`;
     let b = buckets.get(k);
-    if (!b) { b = { period: p.key, start: p.start, label: p.label, studentId: r.studentId, name: r.name, grade: r.grade, visits: 0, totalMin: 0, auto: 0 }; buckets.set(k, b); }
-    b.visits++; b.totalMin += r.min; if (r.auto) b.auto++; b.name = r.name; b.grade = r.grade;
+    if (!b) { b = { period: p.key, start: p.start, label: p.label, studentId: r.studentId, name: r.name, kumonId: r.kumonId || '', visits: 0, late: 0, absent: 0, totalMin: 0, auto: 0 }; buckets.set(k, b); }
+    if (r.kind === 'absent') b.absent++;
+    else { b.visits++; b.totalMin += r.min; if (r.auto) b.auto++; if (isLate(r)) b.late++; }
+    b.name = r.name; if (r.kumonId) b.kumonId = r.kumonId;
   }
-  const agg = [...buckets.values()].map((b) => Object.assign(b, { avgMin: Math.round(b.totalMin / b.visits) }));
+  const agg = [...buckets.values()].map((b) => Object.assign(b, { avgMin: b.visits ? Math.round(b.totalMin / b.visits) : 0 }));
   agg.sort((a, b) => (a.period < b.period ? 1 : a.period > b.period ? -1 : a.name.localeCompare(b.name)));
   return { group, days, summary, total: agg.length, rows: agg.slice(0, MAX_VIEW_ROWS), all: agg };
 }
 
 function fmtMin(min) { const hh = Math.floor(min / 60), mm = min % 60; return hh ? (mm ? `${hh}h ${mm}m` : `${hh}h`) : `${mm} min`; }
-function fmtClock(iso) { const d = new Date(iso); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; }
+function fmtClock(iso) { const d = new Date(iso); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`; }
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function historyCsv(q) {
   const r = queryHistory(q);
   const rows = [];
   if (r.group === 'visit') {
-    rows.push(['Date', 'Weekday', 'Student', 'Grade', 'Check in', 'Check out', 'Minutes', 'Stayed', 'Scheduled in', 'Scheduled out', 'Note']);
+    rows.push(['Date', 'Weekday', 'Student ID', 'Student', 'Attendance', 'Minutes late', 'Scheduled in', 'Checked in', 'Scheduled out', 'Checked out', 'Minutes', 'Stayed', 'Note']);
     for (const v of r.all) {
-      const note = v.open ? 'Still here' : v.auto ? 'No check-out recorded; closed at scheduled time' : v.src === 'admin' ? 'Checked out by teacher' : '';
-      rows.push([v.date, WEEKDAYS[new Date(`${v.date}T12:00:00`).getDay()], v.name, v.grade || '', fmtClock(v.in), v.out ? fmtClock(v.out) : '', v.open ? '' : v.min, v.open ? '' : fmtMin(v.min), v.schedIn, v.schedOut, note]);
+      const wd = WEEKDAYS[weekdayOf(v.date)];
+      if (v.kind === 'absent') { rows.push([v.date, wd, v.kumonId || '', v.name, 'Absent', '', v.schedIn, '', v.schedOut, '', '', '', '']); continue; }
+      const late = v.lateMin ?? lateMinOf(v);
+      const note = [v.open ? 'Still here' : v.auto ? 'No check-out recorded; closed at scheduled time' : v.src === 'admin' ? 'Checked out by teacher' : '', late == null ? 'Not scheduled that day' : ''].filter(Boolean).join('; ');
+      rows.push([v.date, wd, v.kumonId || '', v.name, late > 0 ? 'Late' : 'Present', late > 0 ? late : '', v.schedIn, fmtClock(v.in), v.schedOut, v.out ? fmtClock(v.out) : '', v.open ? '' : v.min, v.open ? '' : fmtMin(v.min), note]);
     }
   } else {
-    rows.push(['Period', 'Period start', 'Student', 'Grade', 'Visits', 'Total minutes', 'Total time', 'Average minutes', 'Visits without check-out']);
-    for (const b of r.all) rows.push([b.label, b.start, b.name, b.grade || '', b.visits, b.totalMin, fmtMin(b.totalMin), b.avgMin, b.auto]);
+    rows.push(['Period', 'Period start', 'Student ID', 'Student', 'Visits', 'Late', 'Absent', 'Total minutes', 'Total time', 'Average minutes', 'Visits without check-out']);
+    for (const b of r.all) rows.push([b.label, b.start, b.kumonId || '', b.name, b.visits, b.late, b.absent, b.totalMin, fmtMin(b.totalMin), b.avgMin, b.auto]);
   }
   return { group: r.group, body: rows.map((x) => x.map(csvCell).join(',')).join('\r\n') + '\r\n' };
 }
@@ -407,6 +510,7 @@ setInterval(() => {
     for (const [t, e] of Object.entries(data.sessions)) if (e < now) { delete data.sessions[t]; changed = true; }
     if (changed) save();
     closeStaleDays();
+    markAbsences();
   } catch (err) { console.error('housekeeping failed:', err.message); }
 }, 60000).unref();
 
@@ -457,22 +561,25 @@ function cookieHeader(req, name, value, maxAgeSec) {
   return c;
 }
 
-function readBody(req) {
+function readRaw(req, limit) {
   return new Promise((resolve, reject) => {
+    const declared = Number(req.headers['content-length']);
+    if (declared > limit) { reject(new Error('body too large')); return; }
     const chunks = [];
     let size = 0;
     req.on('data', (c) => {
       size += c.length;
-      if (size > MAX_BODY_BYTES) { reject(new Error('body too large')); req.destroy(); return; }
+      if (size > limit) { reject(new Error('body too large')); req.destroy(); return; }
       chunks.push(c);
     });
-    req.on('end', () => {
-      if (!chunks.length) return resolve({});
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-      catch (_) { reject(new Error('invalid json')); }
-    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
+}
+async function readBody(req, limit = MAX_BODY_BYTES) {
+  const buf = await readRaw(req, limit);
+  if (!buf.length) return {};
+  try { return JSON.parse(buf.toString('utf8')); } catch (_) { throw new Error('invalid json'); }
 }
 
 // CSRF / cross-site protection for every state-changing request.
@@ -518,25 +625,80 @@ function serveStatic(req, res, entry) {
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 const ALLOWED_DAYS = [1, 4]; // Monday and Thursday
 
-function validateStudent(b) {
+const SUBJECT_RE = /^[A-Za-z][A-Za-z ]{0,19}$/;
+const KUMON_ID_RE = /^[A-Za-z0-9-]{1,24}$/;
+
+// opts.self: the student being edited (null when adding); opts.allowNoDays: allowed for imports
+function validateStudent(b, opts = {}) {
   const errors = [];
+  if (!b || typeof b !== 'object') return { errors: ['Bad request.'], value: null };
   const name = String(b.name ?? '').trim().replace(/\s+/g, ' ');
   if (!name) errors.push('Name is required.');
   if (name.length > 60) errors.push('Name is too long.');
-  const grade = String(b.grade ?? '').trim().slice(0, 20);
-  let age = null;
-  if (b.age !== '' && b.age != null) {
-    age = Number(b.age);
-    if (!Number.isInteger(age) || age < 2 || age > 99) errors.push('Age must be a whole number.');
+  const kumonId = String(b.kumonId ?? '').trim();
+  if (kumonId && !KUMON_ID_RE.test(kumonId)) errors.push('Student ID can only have letters, numbers and dashes.');
+  const self = opts.self || null;
+  if (kumonId && !opts.skipDuplicateCheck && (!self || self.kumonId !== kumonId)) {
+    const other = data.students.find((x) => x.kumonId === kumonId && (!self || x.id !== self.id));
+    if (other) errors.push(`Student ID ${kumonId} already belongs to ${other.name}.`);
   }
+  const subjects = [...new Set((Array.isArray(b.subjects) ? b.subjects : []).map((x) => String(x).trim()).filter((x) => SUBJECT_RE.test(x)))].slice(0, 4);
   const notes = String(b.notes ?? '').trim().slice(0, 300);
-  const inTime = String(b.inTime ?? ''), outTime = String(b.outTime ?? '');
-  if (!HHMM.test(inTime) || !HHMM.test(outTime)) errors.push('Check-in and check-out times are required (HH:MM).');
-  else if (outTime <= inTime) errors.push('Check-out time must be after check-in time.');
-  let days = Array.isArray(b.days) ? b.days.map(Number).filter((d) => ALLOWED_DAYS.includes(d)) : [];
-  days = [...new Set(days)].sort();
-  if (!days.length) errors.push('Pick Monday, Thursday, or both.');
-  return { errors, value: { name, grade, age, notes, inTime, outTime, days } };
+  const sched = {};
+  const src = b.sched && typeof b.sched === 'object' ? b.sched : {};
+  for (const d of ALLOWED_DAYS) {
+    const t = src[d] ?? src[String(d)];
+    if (!t) continue;
+    const label = d === 1 ? 'Monday' : 'Thursday';
+    const inT = String(t.in ?? ''), outT = String(t.out ?? '');
+    if (!HHMM.test(inT) || !HHMM.test(outT)) { errors.push(`${label}: check-in and check-out times are required.`); continue; }
+    if (outT <= inT) { errors.push(`${label}: check-out must be after check-in.`); continue; }
+    sched[String(d)] = { in: inT, out: outT };
+  }
+  if (!errors.length && !Object.keys(sched).length && !opts.allowNoDays) errors.push('Pick Monday, Thursday, or both.');
+  return { errors, value: { name, kumonId, subjects, notes, sched } };
+}
+
+// ---------------------------------------------------------------- import from a schedule file
+//
+// Each student in the file is matched to an existing one by student ID (and name when two
+// students share an ID), or by name for students who have no ID yet. Matched students get the
+// new name, ID, subjects and times; their notes and history are kept. Nobody is deleted.
+function planImport(list) {
+  const used = new Set();
+  const plan = [];
+  const fileIds = new Map();
+  for (const st of list) if (st.kumonId) fileIds.set(st.kumonId, (fileIds.get(st.kumonId) || 0) + 1);
+  const lower = (x) => x.toLowerCase();
+  for (const st of list) {
+    let match = null;
+    if (st.kumonId) {
+      const sameId = data.students.filter((x) => x.kumonId === st.kumonId && !used.has(x.id));
+      match = sameId.find((x) => lower(x.name) === lower(st.name)) || (sameId.length === 1 && fileIds.get(st.kumonId) === 1 ? sameId[0] : null);
+    }
+    if (!match) match = data.students.find((x) => !used.has(x.id) && lower(x.name) === lower(st.name) && (!x.kumonId || !st.kumonId || x.kumonId === st.kumonId)) || null;
+    if (match) used.add(match.id);
+    let action = 'add';
+    if (match) {
+      const same = match.name === st.name && match.kumonId === st.kumonId && JSON.stringify([...match.subjects].sort()) === JSON.stringify([...st.subjects].sort()) && JSON.stringify(match.sched) === JSON.stringify(st.sched);
+      action = same ? 'same' : 'update';
+    }
+    plan.push({ st, match, action });
+  }
+  const notInFile = data.students.filter((x) => !used.has(x.id)).map((x) => x.name);
+  return { plan, notInFile };
+}
+
+function cleanImportList(raw) {
+  if (!Array.isArray(raw)) return { errors: ['Bad request.'] };
+  if (raw.length > 5000) return { errors: ['Too many students in one import.'] };
+  const errors = [], list = [];
+  raw.forEach((b, i) => {
+    const { errors: e, value } = validateStudent(b, { allowNoDays: true, skipDuplicateCheck: true });
+    if (e.length) errors.push(`${(b && b.name) || `Student ${i + 1}`}: ${e.join(' ')}`);
+    else list.push(value);
+  });
+  return { errors, list };
 }
 
 function todayRecords() {
@@ -554,7 +716,8 @@ function recordEvent(student, action, source) {
     if (rec.in && !rec.out) return { error: `${student.name} is already checked in.` };
     if (rec.out) archiveRecord(student.id, key, rec); // second visit the same day: keep the first one
     // snapshot name/schedule so the permanent record is right even if the student is edited later
-    day[student.id] = { in: iso, out: null, dismissed: false, name: student.name, grade: student.grade, schedIn: student.inTime, schedOut: student.outTime };
+    const sc = schedOn(student, now.getDay());
+    day[student.id] = { in: iso, out: null, dismissed: false, name: student.name, kumonId: student.kumonId || '', schedIn: sc ? sc.in : '', schedOut: sc ? sc.out : '' };
   } else if (action === 'out') {
     if (!rec.in || rec.out) return { error: `${student.name} is not checked in.` };
     rec.out = iso; rec.outSrc = source;
@@ -570,7 +733,7 @@ function recordEvent(student, action, source) {
     if (!rec.in) return { error: `${student.name} has not checked in today.` };
     if (!rec.out) {
       rec.out = iso; rec.outSrc = source;
-      data.log.push({ ts: iso, studentId: student.id, name: student.name, grade: student.grade, type: 'out', source });
+      data.log.push({ ts: iso, studentId: student.id, name: student.name, type: 'out', source });
       archiveRecord(student.id, key, rec);
     }
     rec.dismissed = true;
@@ -580,7 +743,7 @@ function recordEvent(student, action, source) {
   } else {
     return { error: 'Unknown action.' };
   }
-  data.log.push({ ts: iso, studentId: student.id, name: student.name, grade: student.grade, type: action, source });
+  data.log.push({ ts: iso, studentId: student.id, name: student.name, type: action, source });
   save();
   return { ok: true, time: iso, record: day[student.id] || null };
 }
@@ -591,7 +754,7 @@ function kioskView() {
     .map((s) => {
       const r = recs[s.id];
       const status = r && r.in && !r.out ? 'in' : r && r.out ? 'done' : 'out';
-      return { id: s.id, name: s.name, grade: s.grade, status, since: status === 'in' ? r.in : null };
+      return { id: s.id, name: s.name, kumonId: s.kumonId || '', status, since: status === 'in' ? r.in : null };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -691,6 +854,40 @@ async function handle(req, res) {
       return json(res, 200, adminState());
     }
 
+    if (m === 'POST' && p === '/api/admin/import/preview') {
+      // The raw file. Read into memory (5 MB at most), parsed, and then thrown away; it is never saved.
+      const buf = await readRaw(req, MAX_IMPORT_FILE_BYTES);
+      let parsed;
+      try { parsed = parseSchedule(buf); }
+      catch (err) {
+        if (!(err instanceof ImportError)) console.error('import failed:', err.message);
+        return json(res, 400, { error: err instanceof ImportError ? err.message : 'This file could not be read. Try saving it as .xlsx or .csv.' });
+      }
+      const { errors, list } = cleanImportList(parsed.students);
+      const warnings = parsed.warnings.concat(errors);
+      const { plan, notInFile } = planImport(list);
+      return json(res, 200, {
+        rows: parsed.rows, warnings: warnings.slice(0, 200), moreWarnings: Math.max(0, warnings.length - 200),
+        students: plan.map((x) => Object.assign({ action: x.action }, x.st)), notInFile,
+      });
+    }
+
+    if (m === 'POST' && p === '/api/admin/import/commit') {
+      const b = await readBody(req, MAX_IMPORT_JSON_BYTES);
+      const { errors, list } = cleanImportList(b.students);
+      if (errors.length) return json(res, 400, { error: errors.slice(0, 5).join(' ') });
+      const { plan } = planImport(list);
+      const counts = { added: 0, updated: 0, same: 0 };
+      const now = new Date().toISOString();
+      for (const { st, match, action } of plan) {
+        if (action === 'add') data.students.push(Object.assign({ id: randomToken(9), createdAt: now }, st));
+        else if (action === 'update') Object.assign(match, { name: st.name, kumonId: st.kumonId, subjects: st.subjects, sched: st.sched });
+        counts[action === 'add' ? 'added' : action === 'update' ? 'updated' : 'same']++;
+      }
+      save();
+      return json(res, 200, Object.assign({ ok: true }, counts));
+    }
+
     if (m === 'POST' && p === '/api/admin/students') {
       const { errors, value } = validateStudent(await readBody(req));
       if (errors.length) return json(res, 400, { error: errors.join(' ') });
@@ -705,7 +902,7 @@ async function handle(req, res) {
       const s = data.students.find((x) => x.id === sm[1]);
       if (!s) return json(res, 404, { error: 'Student not found.' });
       if (m === 'PUT') {
-        const { errors, value } = validateStudent(await readBody(req));
+        const { errors, value } = validateStudent(await readBody(req), { self: s });
         if (errors.length) return json(res, 400, { error: errors.join(' ') });
         Object.assign(s, value);
         save();
@@ -754,6 +951,7 @@ async function handle(req, res) {
     }
 
     if (m === 'GET' && (p === '/api/admin/history' || p === '/api/admin/export.csv')) {
+      const status = ['late', 'absent', 'ontime'].includes(url.searchParams.get('status')) ? url.searchParams.get('status') : '';
       const today = localDateKey(new Date());
       const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v || '') && !Number.isNaN(new Date(`${v}T12:00:00`).getTime());
       let from = isDate(url.searchParams.get('from')) ? url.searchParams.get('from') : today;
@@ -762,10 +960,10 @@ async function handle(req, res) {
       const studentId = /^[A-Za-z0-9_-]{1,40}$/.test(url.searchParams.get('student') || '') ? url.searchParams.get('student') : '';
       const group = url.searchParams.get('group') || 'auto';
       if (p === '/api/admin/history') {
-        const r = queryHistory({ from, to, studentId, group });
+        const r = queryHistory({ from, to, studentId, group, status });
         return json(res, 200, { from, to, group: r.group, days: r.days, summary: r.summary, total: r.total, rows: r.rows, truncated: r.total > r.rows.length });
       }
-      const { group: g, body } = historyCsv({ from, to, studentId, group });
+      const { group: g, body } = historyCsv({ from, to, studentId, group, status });
       return send(res, 200, body, {
         'Content-Type': 'text/csv; charset=utf-8',
         'Content-Disposition': `attachment; filename="kumon-attendance-${from}_to_${to}-by-${g}.csv"`,
@@ -847,4 +1045,5 @@ process.on('unhandledRejection', (err) => { console.error('Unexpected error (ser
 
 try { loadHistory(); } catch (err) { console.error('Could not read history files:', err.message); }
 try { closeStaleDays(); } catch (err) { console.error('Could not close old visits:', err.message); }
+try { markAbsences(); } catch (err) { console.error('Could not mark absences:', err.message); }
 start();
