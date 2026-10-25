@@ -1,12 +1,26 @@
 'use strict';
 // Shared helpers for the student and admin pages. No external libraries.
 
+// The admin login key for this tab only. sessionStorage is cleared when the tab is closed,
+// which is what makes the admin page ask for the password again.
+const TabKey = {
+  get() { try { return sessionStorage.getItem('adminKey') || ''; } catch (_) { return ''; } },
+  set(k) { try { if (k) sessionStorage.setItem('adminKey', k); else sessionStorage.removeItem('adminKey'); } catch (_) {} },
+};
+
+function apiHeaders() {
+  const headers = { 'X-Requested-With': 'kumon' };
+  const k = TabKey.get();
+  if (k) headers['X-Admin-Key'] = k;
+  return headers;
+}
+
 async function api(method, path, body) {
   const opts = {
     method,
     credentials: 'same-origin',
     cache: 'no-store',
-    headers: { 'X-Requested-With': 'kumon' },
+    headers: apiHeaders(),
   };
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
@@ -21,6 +35,21 @@ async function api(method, path, body) {
   let data = null;
   try { data = await res.json(); } catch (_) {}
   return { status: res.status, ok: res.ok, data: data || {} };
+}
+
+// Downloads a file from the admin API (a plain link cannot send the tab key).
+async function downloadFile(path) {
+  let res;
+  try { res = await fetch(path, { credentials: 'same-origin', cache: 'no-store', headers: apiHeaders() }); }
+  catch (_) { return { ok: false, status: 0, error: 'Not connected to the server.' }; }
+  if (!res.ok) return { ok: false, status: res.status, error: res.status === 401 ? 'Please log in again.' : 'Download failed.' };
+  const m = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '');
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url; a.download = m ? m[1] : 'download';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  return { ok: true };
 }
 
 // Tiny DOM builder: h('div', {class:'x', onclick: fn}, 'text', childNode, ...)
@@ -113,8 +142,4 @@ function icon(name) {
   svg.setAttribute('aria-hidden', 'true');
   svg.innerHTML = ICONS[name] || '';
   return svg;
-}
-function greeting(d) {
-  const hr = d.getHours();
-  return hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
 }

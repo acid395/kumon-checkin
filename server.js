@@ -1,20 +1,22 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * Kumon Check-In / Check-Out — self-hosted, zero-dependency server.
+ * Kumon check-in / check-out server. Plain Node, no packages.
  *
- * Security model (summary):
- *  - Runs on ONE computer at the center. iPads/laptops on the same Wi-Fi connect to it.
- *    Nothing is sent to any cloud service, CDN, analytics or third party.
- *  - All data lives in ./data/kumon-data.json (file mode 0600, directory 0700).
- *  - Admin pages require a password (scrypt-hashed). The password can only be
- *    created the first time from the server computer itself (localhost).
- *  - The student page (the site's main page) exposes only name, student ID and in/out
- *    status — never notes, schedules or history.
- *  - HttpOnly + SameSite=Strict session cookies, login rate limiting,
- *    CSRF checks (custom header + Origin/Sec-Fetch-Site), strict CSP,
- *    no inline scripts, request body size limits, input validation.
- *  - Optional HTTPS: drop certs/key.pem and certs/cert.pem next to this file.
+ * Security notes:
+ *  - Runs on one computer at the center; iPads and laptops on the same Wi-Fi connect to it.
+ *    Nothing is sent to any outside service.
+ *  - Data lives in ./data (folder mode 0700, files 0600). The folder is not part of the code,
+ *    so updating the code never touches it.
+ *  - The admin password is hashed with scrypt and can only be created the first time from the
+ *    server computer itself.
+ *  - Admin logins are held in memory only and need both an HttpOnly cookie and a key the
+ *    browser tab keeps for itself, so closing the tab or restarting the server logs out.
+ *  - The student page only gets each student's name, student ID and in/out status.
+ *  - SameSite=Strict cookies, login rate limiting, CSRF checks (custom header plus
+ *    Origin/Sec-Fetch-Site), strict CSP with no inline scripts, body size limits,
+ *    input validation on everything that is saved.
+ *  - Optional HTTPS: put certs/key.pem and certs/cert.pem next to this file.
  */
 
 const http = require('http');
@@ -36,8 +38,12 @@ const CERT_DIR = path.join(ROOT, 'certs');
 
 const PORT = Number(process.env.PORT) || 8787;
 const HOST = process.env.HOST || '0.0.0.0';
-const SESSION_TTL_MS = 12 * 60 * 60 * 1000;      // admin login lasts 12h of inactivity
+const SESSION_IDLE_MS = 20 * 60 * 1000;         // admin login ends after 20 minutes with the page closed
+const SESSION_MAX_MS = 12 * 60 * 60 * 1000;      // and after 12 hours no matter what
+const DATA_VERSION = 2;                          // bump when the data file layout changes
+const KEEP_SNAPSHOTS = 10;                       // startup and before-restore copies kept of each kind
 const MAX_BODY_BYTES = 64 * 1024;
+const MAX_RESTORE_BYTES = 64 * 1024 * 1024;      // a downloaded backup, which includes every visit
 const MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024;   // a schedule spreadsheet or PDF
 const MAX_IMPORT_JSON_BYTES = 2 * 1024 * 1024;   // the checked student list sent back to be saved
 const LOGIN_MAX_FAILS = 5;
@@ -62,7 +68,7 @@ const DEMO = /^(1|true|yes)$/i.test(process.env.DEMO || '');
 function randomToken(bytes) { return crypto.randomBytes(bytes).toString('base64url'); }
 
 function defaultData() {
-  return { version: 2, adminHash: null, students: [], attendance: {}, log: [], sessions: {} };
+  return { version: DATA_VERSION, adminHash: null, students: [], attendance: {}, log: [] };
 }
 
 function ensureDirs() {
@@ -93,6 +99,13 @@ function loadData() {
       console.error('  Nothing was changed. Restore it from kumon-data.prev.json or the backups/ folder, then start again.\n');
       process.exit(1);
     }
+    if (Number(parsed.version) > DATA_VERSION) {
+      // Older code must not rewrite data saved by newer code.
+      console.error(`\n  The data in ${DATA_DIR} was saved by a newer version of this program.`);
+      console.error('  Update the code (git pull) and start again. Nothing was changed.\n');
+      process.exit(1);
+    }
+    snapshot('start'); // a copy as it was before this version of the code touched it
     return normalise(parsed);
   }
   for (const candidate of [PREV_FILE, latestBackup()]) {
@@ -113,8 +126,8 @@ function loadData() {
 
 function normalise(parsed) {
   const d = Object.assign(defaultData(), parsed);
-  delete d.kioskKey; delete d.settings; // leftovers from earlier versions
-  if (!d.sessions || typeof d.sessions !== 'object') d.sessions = {};
+  delete d.kioskKey; delete d.settings; delete d.sessions; // leftovers from earlier versions
+  d.version = DATA_VERSION;
   for (const s of d.students) migrateStudent(s);
   return d;
 }
@@ -160,6 +173,21 @@ function dailyBackup() {
       if (m && m[1] < cutoff) fs.unlinkSync(path.join(BACKUP_DIR, f));
     }
   } catch (err) { console.error('backup failed:', err.message); }
+}
+
+// Extra copies taken when the server starts and before a restore; the newest few of each are kept.
+const SNAPSHOT_RE = /^(start|before-restore)-(\d{4}-\d{2}-\d{2})-(\d{6,9})\.json$/;
+function snapshot(kind) {
+  if (!fs.existsSync(DATA_FILE)) return;
+  const d = new Date();
+  const name = `${kind}-${localDateKey(d)}-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}${String(d.getMilliseconds()).padStart(3, '0')}.json`;
+  try {
+    ensureDirs();
+    const target = path.join(BACKUP_DIR, name);
+    fs.copyFileSync(DATA_FILE, target); fs.chmodSync(target, 0o600);
+    const same = fs.readdirSync(BACKUP_DIR).filter((f) => f.startsWith(kind + '-') && SNAPSHOT_RE.test(f)).sort();
+    for (const f of same.slice(0, Math.max(0, same.length - KEEP_SNAPSHOTS))) fs.unlinkSync(path.join(BACKUP_DIR, f));
+  } catch (err) { console.error('copy failed:', err.message); }
 }
 
 let data = loadData();
@@ -468,7 +496,7 @@ function parseCookies(req) {
   for (const part of raw.split(';')) {
     const i = part.indexOf('=');
     if (i < 0) continue;
-    out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    try { out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim()); } catch (_) { /* malformed cookie */ }
   }
   return out;
 }
@@ -482,33 +510,44 @@ function clientIp(req) { return req.socket.remoteAddress || 'unknown'; }
 
 // ---------------------------------------------------------------- sessions & throttling
 
-// Sessions live in data.sessions (token -> expiresAt) so a server restart keeps teachers logged in.
-const sessions = {
-  get(t) { return data.sessions[t]; },
-  set(t, exp, persist) { data.sessions[t] = exp; if (persist) save(); },
-  delete(t) { if (t in data.sessions) { delete data.sessions[t]; save(); } },
-  clear() { data.sessions = {}; save(); },
-};
+// Logins are kept in memory only (never written to disk), so restarting the server logs
+// everyone out. A login needs two things: the HttpOnly cookie, and a second key the admin page
+// keeps in sessionStorage and sends as a header. sessionStorage is gone once the tab is closed,
+// so opening the admin page again asks for the password. The page polls every few seconds while
+// it is open; once it stops, the login runs out after SESSION_IDLE_MS.
+const sessions = new Map(); // sha256(cookie token) -> { key, idleUntil, endsAt }
+function tokenHash(t) { return crypto.createHash('sha256').update(String(t)).digest('hex'); }
 function newSession() {
-  const t = randomToken(32);
-  sessions.set(t, Date.now() + SESSION_TTL_MS, true);
-  return t;
+  const token = randomToken(32), key = randomToken(32), now = Date.now();
+  sessions.set(tokenHash(token), { key, idleUntil: now + SESSION_IDLE_MS, endsAt: now + SESSION_MAX_MS });
+  return { token, key };
 }
 function getSession(req) {
-  const t = parseCookies(req).sid;
-  if (!t) return null;
-  const exp = sessions.get(t);
-  if (!exp) return null;
-  if (exp < Date.now()) { sessions.delete(t); return null; }
-  sessions.set(t, Date.now() + SESSION_TTL_MS, false); // rolling expiry, persisted with the next save
-  return t;
+  const token = parseCookies(req).sid;
+  if (!token) return null;
+  const id = tokenHash(token);
+  const s = sessions.get(id);
+  if (!s) return null;
+  const now = Date.now();
+  if (s.idleUntil < now || s.endsAt < now) { sessions.delete(id); return null; }
+  if (!safeEqual(req.headers['x-admin-key'] || '', s.key)) return null;
+  s.idleUntil = now + SESSION_IDLE_MS;
+  return id;
+}
+function endSession(req) {
+  const token = parseCookies(req).sid;
+  if (token) sessions.delete(tokenHash(token));
+}
+// Logs in this browser tab: cookie in the header, tab key in the body.
+function loggedIn(req, res) {
+  const { token, key } = newSession();
+  return json(res, 200, { ok: true, key }, { 'Set-Cookie': cookieHeader(req, 'sid', token) });
 }
 setInterval(() => {
   try {
     const now = Date.now();
-    let changed = false;
-    for (const [t, e] of Object.entries(data.sessions)) if (e < now) { delete data.sessions[t]; changed = true; }
-    if (changed) save();
+    for (const [id, s] of sessions) if (s.idleUntil < now || s.endsAt < now) sessions.delete(id);
+    for (const [ip, r] of loginFails) if (r.resetAt < now) loginFails.delete(ip);
     closeStaleDays();
     markAbsences();
   } catch (err) { console.error('housekeeping failed:', err.message); }
@@ -579,7 +618,10 @@ function readRaw(req, limit) {
 async function readBody(req, limit = MAX_BODY_BYTES) {
   const buf = await readRaw(req, limit);
   if (!buf.length) return {};
-  try { return JSON.parse(buf.toString('utf8')); } catch (_) { throw new Error('invalid json'); }
+  let b;
+  try { b = JSON.parse(buf.toString('utf8')); } catch (_) { throw new Error('invalid json'); }
+  if (!b || typeof b !== 'object' || Array.isArray(b)) throw new Error('invalid json');
+  return b;
 }
 
 // CSRF / cross-site protection for every state-changing request.
@@ -777,6 +819,106 @@ function csvCell(v) {
   return s;
 }
 
+// ---------------------------------------------------------------- restore
+//
+// A restore replaces the students and the recent day records with the ones in the backup.
+// Visit history is only ever added to: visits in the backup that are missing here are put back,
+// and nothing already recorded is removed. The admin password is not changed. The current data
+// is copied to backups/ first, so a restore can be undone from the same list.
+
+class RestoreError extends Error {}
+const ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const isIso = (v) => typeof v === 'string' && v.length <= 40 && !Number.isNaN(Date.parse(v));
+const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+const hhmmOr = (v) => (HHMM.test(v || '') ? v : '');
+const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+
+// Saved copies in data/backups that can be restored from the Settings page.
+function savedCopies() {
+  let files = [];
+  try { files = fs.readdirSync(BACKUP_DIR); } catch (_) {}
+  const out = [];
+  for (const f of files) {
+    const daily = /^kumon-data-\d{4}-\d{2}-\d{2}\.json$/.test(f);
+    const snap = f.match(SNAPSHOT_RE);
+    if (!daily && !snap) continue;
+    const full = path.join(BACKUP_DIR, f);
+    let when;
+    try { when = fs.statSync(full).mtime.toISOString(); } catch (_) { continue; }
+    const parsed = tryParse(full);
+    out.push({ file: f, full, kind: daily ? 'daily' : snap[1], when, students: parsed && Array.isArray(parsed.students) ? parsed.students.length : null });
+  }
+  return out.sort((a, b) => (a.when < b.when ? 1 : a.when > b.when ? -1 : 0));
+}
+
+function cleanVisit(v) {
+  if (!isObj(v) || typeof v.id !== 'string' || v.id.length > 120 || !DATE_RE.test(v.date || '') || !ID_RE.test(v.studentId || '')) return null;
+  const out = { id: v.id, date: v.date, studentId: v.studentId, name: str(v.name, 60) || 'Unknown', kumonId: str(v.kumonId, 24), schedIn: hhmmOr(v.schedIn), schedOut: hhmmOr(v.schedOut) };
+  if (v.kind === 'absent') {
+    if (!isIso(v.due)) return null;
+    return Object.assign(out, { kind: 'absent', in: null, out: null, due: v.due, min: 0, src: '', auto: false, lateMin: null });
+  }
+  if (!isIso(v.in) || !isIso(v.out) || new Date(v.out) < new Date(v.in)) return null;
+  Object.assign(out, { in: v.in, out: v.out, min: Math.round((new Date(v.out) - new Date(v.in)) / 60000), src: ['student', 'admin', 'auto'].includes(v.src) ? v.src : 'student', auto: !!v.auto });
+  out.lateMin = Number.isInteger(v.lateMin) && v.lateMin >= 0 && v.lateMin < 1440 ? v.lateMin : lateMinOf(out);
+  return out;
+}
+
+// Checks a backup (a downloaded file or a saved copy) and keeps only fields this program uses.
+function cleanBackup(b) {
+  if (!isObj(b) || !Array.isArray(b.students)) throw new RestoreError('This is not a backup from this check-in system.');
+  if (Number(b.version) > DATA_VERSION) throw new RestoreError('This backup was made by a newer version. Update the code first.');
+  if (b.students.length > 5000) throw new RestoreError('This backup has too many students.');
+  const skipped = [], students = [], ids = new Set();
+  for (const raw of b.students) {
+    if (!isObj(raw) || !ID_RE.test(raw.id || '') || ids.has(raw.id)) { skipped.push(`${str(raw && raw.name, 60) || 'A student'}: missing or repeated record ID.`); continue; }
+    const { errors, value } = validateStudent(migrateStudent(Object.assign({}, raw)), { allowNoDays: true, skipDuplicateCheck: true });
+    if (errors.length) { skipped.push(`${str(raw.name, 60) || 'A student'}: ${errors.join(' ')}`); continue; }
+    ids.add(raw.id);
+    students.push(Object.assign({ id: raw.id, createdAt: isIso(raw.createdAt) ? raw.createdAt : new Date().toISOString() }, value));
+  }
+  if (!students.length && b.students.length) throw new RestoreError('None of the students in this backup could be read.');
+
+  const attendance = {};
+  for (const [day, recs] of Object.entries(isObj(b.attendance) ? b.attendance : {})) {
+    if (!DATE_RE.test(day) || !isObj(recs)) continue;
+    for (const [sid, r] of Object.entries(recs)) {
+      if (!ids.has(sid) || !isObj(r) || !isIso(r.in) || (r.out != null && !isIso(r.out))) continue;
+      const rec = { in: r.in, out: r.out || null, dismissed: !!r.dismissed, name: str(r.name, 60), kumonId: str(r.kumonId, 24), schedIn: hhmmOr(r.schedIn), schedOut: hhmmOr(r.schedOut) };
+      if (['student', 'admin', 'auto'].includes(r.outSrc)) rec.outSrc = r.outSrc;
+      if (r.auto) rec.auto = true;
+      if (r.archived) rec.archived = true;
+      (attendance[day] = attendance[day] || {})[sid] = rec;
+    }
+  }
+
+  const log = [];
+  for (const e of Array.isArray(b.log) ? b.log.slice(-20000) : []) {
+    if (!isObj(e) || !isIso(e.ts) || !ID_RE.test(e.studentId || '') || !['in', 'out', 'clear', 'dismiss'].includes(e.type)) continue;
+    log.push({ ts: e.ts, studentId: e.studentId, name: str(e.name, 60), type: e.type, source: e.source === 'admin' ? 'admin' : 'student' });
+  }
+  log.sort((x, y) => (x.ts < y.ts ? -1 : x.ts > y.ts ? 1 : 0));
+
+  const visits = [];
+  const vids = new Set();
+  for (const raw of Array.isArray(b.visits) ? b.visits : []) {
+    const v = cleanVisit(raw);
+    if (v && !vids.has(v.id)) { vids.add(v.id); visits.push(v); }
+  }
+  return { students, attendance, log, visits, skipped, exported: isIso(b.exported) ? b.exported : null };
+}
+
+function applyRestore(r) {
+  snapshot('before-restore');
+  data.students = r.students;
+  data.attendance = r.attendance;
+  data.log = r.log;
+  for (const v of r.visits) appendVisit(v); // skips visits that are already recorded
+  save();
+  closeStaleDays();
+}
+
 // ---------------------------------------------------------------- router
 
 async function handle(req, res) {
@@ -811,7 +953,7 @@ async function handle(req, res) {
     const setupRequired = !data.adminHash;
 
     if (m === 'GET' && p === '/api/admin/me') {
-      return json(res, 200, { setupRequired, setupAllowed: setupRequired && isLocalhost(req), loggedIn: !!getSession(req) });
+      return json(res, 200, { setupRequired, setupAllowed: setupRequired && isLocalhost(req), loggedIn: !setupRequired && !!getSession(req) });
     }
 
     if (m === 'POST' && p === '/api/admin/setup') {
@@ -822,8 +964,7 @@ async function handle(req, res) {
       if (pw.length < 8) return json(res, 400, { error: 'Password must be at least 8 characters.' });
       data.adminHash = hashPassword(pw);
       save();
-      const t = newSession();
-      return json(res, 200, { ok: true }, { 'Set-Cookie': cookieHeader(req, 'sid', t) });
+      return loggedIn(req, res);
     }
 
     if (m === 'POST' && p === '/api/admin/login') {
@@ -836,13 +977,11 @@ async function handle(req, res) {
         return json(res, 401, { error: 'Incorrect password.' });
       }
       loginFails.delete(ip);
-      const t = newSession();
-      return json(res, 200, { ok: true }, { 'Set-Cookie': cookieHeader(req, 'sid', t) });
+      return loggedIn(req, res);
     }
 
     if (m === 'POST' && p === '/api/admin/logout') {
-      const t = parseCookies(req).sid;
-      if (t) sessions.delete(t);
+      endSession(req);
       return json(res, 200, { ok: true }, { 'Set-Cookie': cookieHeader(req, 'sid', '', 0) });
     }
 
@@ -930,14 +1069,49 @@ async function handle(req, res) {
 
     if (m === 'POST' && p === '/api/admin/password') {
       const b = await readBody(req);
-      if (!verifyPassword(String(b.current || ''), data.adminHash)) return json(res, 401, { error: 'Current password is incorrect.' });
+      const ip = clientIp(req);
+      if (loginThrottled(ip)) return json(res, 429, { error: 'Too many wrong passwords. Try again in 15 minutes.' });
+      if (!verifyPassword(String(b.current || ''), data.adminHash)) { noteLoginFail(ip); return json(res, 401, { error: 'Current password is incorrect.' }); }
       const next = String(b.next || '');
       if (next.length < 8) return json(res, 400, { error: 'New password must be at least 8 characters.' });
       data.adminHash = hashPassword(next);
       save();
-      sessions.clear();
-      const t = newSession();
-      return json(res, 200, { ok: true }, { 'Set-Cookie': cookieHeader(req, 'sid', t) });
+      sessions.clear(); // log out every other device
+      return loggedIn(req, res);
+    }
+
+    if (m === 'GET' && p === '/api/admin/backups') {
+      return json(res, 200, { backups: savedCopies().map(({ file, kind, when, students }) => ({ file, kind, when, students })) });
+    }
+
+    if (m === 'POST' && p === '/api/admin/restore') {
+      const b = await readBody(req, MAX_RESTORE_BYTES);
+      let raw;
+      if (b.source === 'saved') {
+        const copy = savedCopies().find((x) => x.file === b.file); // only names from the list, never a path
+        if (!copy) return json(res, 404, { error: 'That saved copy no longer exists.' });
+        raw = tryParse(copy.full);
+        if (!raw) return json(res, 400, { error: 'That saved copy could not be read.' });
+      } else if (b.source === 'file') {
+        raw = b.backup;
+      } else {
+        return json(res, 400, { error: 'Bad request.' });
+      }
+      let r;
+      try { r = cleanBackup(raw); }
+      catch (err) {
+        if (err instanceof RestoreError) return json(res, 400, { error: err.message });
+        throw err;
+      }
+      const newVisits = r.visits.filter((v) => !historyIds.has(v.id)).length;
+      const summary = { students: r.students.length, newVisits, skipped: r.skipped.slice(0, 20), moreSkipped: Math.max(0, r.skipped.length - 20), exported: r.exported };
+      if (b.dryRun) return json(res, 200, summary);
+      // Restoring replaces every student, so it asks for the password again.
+      const ip = clientIp(req);
+      if (loginThrottled(ip)) return json(res, 429, { error: 'Too many wrong passwords. Try again in 15 minutes.' });
+      if (!verifyPassword(String(b.password || ''), data.adminHash)) { noteLoginFail(ip); return json(res, 401, { error: 'Incorrect password.', wrongPassword: true }); }
+      applyRestore(r);
+      return json(res, 200, Object.assign({ ok: true }, summary));
     }
 
     if (m === 'GET' && p === '/api/admin/backup') {

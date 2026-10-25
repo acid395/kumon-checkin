@@ -177,6 +177,8 @@ label.field > .input { margin-top: 5px; display: block; }
 .stats b { color: var(--text); font-variant-numeric: tabular-nums; }
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
 .panel h3 { margin: 0 0 12px; font-size: 16px; }
+.panel h4 { margin: 18px 0 8px; font-size: 14px; }
+#restore-list .tablewrap { max-height: 320px; overflow: auto; }
 .panel .help { margin: 0 0 14px; }
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
 .toolbar .input { flex: 1 1 220px; width: auto; }

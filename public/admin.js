@@ -56,6 +56,7 @@ $('setup-form').addEventListener('submit', async (e) => {
   if (f.password.value !== f.password2.value) { $('setup-error').textContent = 'Passwords do not match.'; return; }
   const r = await api('POST', '/api/admin/setup', { password: f.password.value });
   if (!r.ok) { $('setup-error').textContent = r.data.error || 'Could not save.'; return; }
+  TabKey.set(r.data.key);
   f.reset();
   enterApp();
 });
@@ -66,12 +67,14 @@ $('login-form').addEventListener('submit', async (e) => {
   $('login-error').textContent = '';
   const r = await api('POST', '/api/admin/login', { password: f.password.value });
   if (!r.ok) { $('login-error').textContent = r.data.error || 'Login failed.'; return; }
+  TabKey.set(r.data.key);
   f.reset();
   enterApp();
 });
 
 $('btn-logout').addEventListener('click', async () => {
   await api('POST', '/api/admin/logout');
+  TabKey.set('');
   stopPolling();
   show('login');
 });
@@ -118,7 +121,7 @@ function renderCurrent(force) {
   if (r === 'board') renderBoard(force);
   else if (r === 'students') renderStudents(force);
   else if (r === 'activity') renderActivity();
-  else if (r === 'settings') renderSettings();
+  else if (r === 'settings') renderSettings(force);
 }
 
 // ---------------------------------------------------------------- status / progress
@@ -424,7 +427,7 @@ function openImport() {
     clear(body).append(h('h2', {}, 'Import students'), h('div', { class: 'result' }, h('div', { class: 'spinner' }), h('div', { class: 'time' }, `Reading ${file.name}…`)));
     let r;
     try {
-      const res = await fetch('/api/admin/import/preview', { method: 'POST', credentials: 'same-origin', cache: 'no-store', headers: { 'X-Requested-With': 'kumon', 'Content-Type': 'application/octet-stream' }, body: file });
+      const res = await fetch('/api/admin/import/preview', { method: 'POST', credentials: 'same-origin', cache: 'no-store', headers: Object.assign(apiHeaders(), { 'Content-Type': 'application/octet-stream' }), body: file });
       r = { ok: res.ok, status: res.status, data: await res.json().catch(() => ({})) };
     } catch (_) { r = { ok: false, data: { error: 'Not connected to the server.' } }; }
     if (r.status === 401) { closeModal(); stopPolling(); show('login'); return; }
@@ -507,7 +510,10 @@ function initRecords() {
   for (const [key, label] of [['visit', 'Each visit'], ['week', 'Week'], ['month', 'Month'], ['year', 'Year']]) {
     $('hist-group').appendChild(h('button', { type: 'button', 'data-group': key, onclick: () => { hist.group = key; loadRecords(); } }, label));
   }
-  $('btn-export').addEventListener('click', () => { location.href = `/api/admin/export.csv?${recordParams()}`; });
+  $('btn-export').addEventListener('click', async () => {
+    const r = await downloadFile(`/api/admin/export.csv?${recordParams()}`);
+    if (r.status === 401) { stopPolling(); show('login'); } else if (!r.ok) toast(r.error);
+  });
 }
 
 // "1h 28m" for short totals, "1,234 h" once the number of hours gets large.
@@ -631,14 +637,37 @@ function showRecordsFor(s) {
 
 // ---------------------------------------------------------------- settings page
 
-function renderSettings() {
+function renderSettings(force) {
   const bk = $('backup-panel');
   if (!bk.firstChild) {
     bk.append(
       h('h3', {}, 'Backup'),
-      h('p', { class: 'help' }, 'Everything is saved automatically in the data folder, with daily copies kept for 30 days. Download a copy to keep on a USB drive or another computer.'),
-      h('a', { class: 'btn', href: '/api/admin/backup', download: '' }, 'Download backup'));
+      h('p', { class: 'help' }, 'Everything is saved automatically in the data folder, with a copy kept for each of the last 30 days. Download a backup now and then to keep on a USB drive or another computer.'),
+      h('button', { class: 'btn', type: 'button', onclick: async () => {
+        const r = await downloadFile('/api/admin/backup');
+        if (r.status === 401) { stopPolling(); show('login'); } else if (!r.ok) toast(r.error);
+      } }, 'Download backup'));
   }
+  const rp = $('restore-panel');
+  if (!rp.firstChild) {
+    const fileInput = h('input', { type: 'file', accept: '.json,application/json', class: 'hidden', onchange: async (e) => {
+      const f = e.target.files[0];
+      e.target.value = '';
+      if (!f) return;
+      if (f.size > 64 * 1024 * 1024) { toast('That file is too big to be a backup.', 4000); return; }
+      let backup;
+      try { backup = JSON.parse(await f.text()); } catch (_) { toast('That file is not a backup from this system.', 4000); return; }
+      startRestore({ source: 'file', backup }, `the file ${f.name}`);
+    } });
+    rp.append(
+      h('h3', {}, 'Restore'),
+      h('p', { class: 'help' }, 'Puts the student list back the way it was in an earlier copy. Visit records are never deleted and the password stays the same. The data as it is now gets saved first, so a restore can be undone from the list below.'),
+      h('button', { class: 'btn', type: 'button', onclick: () => fileInput.click() }, 'Restore from a downloaded backup'),
+      fileInput,
+      h('h4', {}, 'Copies saved on this computer'),
+      h('div', { id: 'restore-list' }, h('p', { class: 'help' }, 'Loading…')));
+  }
+  if (force) loadSavedCopies();
 
   if ($('password-panel').firstChild) return; // keep what the teacher is typing
   const current = h('input', { class: 'input', type: 'password', autocomplete: 'current-password', required: true });
@@ -652,6 +681,7 @@ function renderSettings() {
         if (next.value !== next2.value) { err.textContent = 'New passwords do not match.'; return; }
         const r = await api('POST', '/api/admin/password', { current: current.value, next: next.value });
         if (!r.ok) { err.textContent = r.data.error || 'Could not change password.'; return; }
+        TabKey.set(r.data.key);
         current.value = next.value = next2.value = ''; toast('Password changed');
       } },
       h('div', { class: 'row' },
@@ -660,6 +690,59 @@ function renderSettings() {
         h('label', { class: 'field' }, 'Repeat new password', next2)),
       err,
       h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save password')));
+}
+
+const COPY_KIND = { daily: 'Daily copy', start: 'Server started', 'before-restore': 'Before a restore' };
+const fmtWhen = (iso) => new Date(iso).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+async function loadSavedCopies() {
+  const r = await api('GET', '/api/admin/backups');
+  const box = $('restore-list');
+  if (!box) return;
+  if (!r.ok) { clear(box).append(h('p', { class: 'help' }, r.data.error || 'Could not load the saved copies.')); return; }
+  const rows = r.data.backups;
+  if (!rows.length) { clear(box).append(h('p', { class: 'help' }, 'None yet. A copy is saved each day the first time something changes.')); return; }
+  clear(box).append(h('div', { class: 'tablewrap' }, h('table', { class: 'log' },
+    h('thead', {}, h('tr', {}, h('th', {}, 'Saved'), h('th', {}, 'Kind'), h('th', { class: 'num' }, 'Students'), h('th', {}, ''))),
+    h('tbody', {}, rows.map((b) => h('tr', {},
+      h('td', {}, fmtWhen(b.when)),
+      h('td', {}, COPY_KIND[b.kind] || b.kind),
+      h('td', { class: 'num' }, b.students == null ? '?' : String(b.students)),
+      h('td', { class: 'num' }, h('button', { class: 'btn btn-sm', type: 'button', onclick: () => startRestore({ source: 'saved', file: b.file }, `the copy saved ${fmtWhen(b.when)}`) }, 'Restore'))))))));
+}
+
+// Checks the backup first (nothing changes), then asks for the password before restoring.
+async function startRestore(payload, label) {
+  const check = await api('POST', '/api/admin/restore', Object.assign({ dryRun: true }, payload));
+  if (check.status === 401) { stopPolling(); show('login'); return; }
+  if (!check.ok) { toast(check.data.error || 'Could not read that backup.', 4000); return; }
+  const d = check.data;
+  const pw = h('input', { class: 'input', type: 'password', autocomplete: 'current-password', required: true });
+  const err = h('div', { class: 'error' });
+  const go = h('button', { class: 'btn btn-danger-solid', type: 'submit' }, 'Restore');
+  openModal(h('form', { onsubmit: async (e) => {
+      e.preventDefault();
+      err.textContent = ''; go.disabled = true;
+      const r = await api('POST', '/api/admin/restore', Object.assign({ password: pw.value }, payload));
+      go.disabled = false;
+      if (r.status === 401 && !r.data.wrongPassword) { closeModal(); stopPolling(); show('login'); return; }
+      if (!r.ok) { err.textContent = r.data.error || 'Restore failed.'; pw.select(); return; }
+      closeModal();
+      toast(r.data.newVisits ? `Restored. ${r.data.newVisits} visit records added back.` : 'Restored', 4000);
+      state.studentsSig = ''; state.boardSig = '';
+      refresh(); loadSavedCopies();
+    } },
+    h('h2', {}, 'Restore this backup?'),
+    h('p', { class: 'sub' }, `From ${label}${d.exported ? `, downloaded ${fmtWhen(d.exported)}` : ''}.`),
+    h('p', {}, `The student list will be replaced with the ${d.students} students in this backup.`),
+    d.newVisits ? h('p', {}, `${d.newVisits} visit records that are missing here will be added back.`) : null,
+    h('p', { class: 'help' }, 'Visit records already here are kept, and the password does not change.'),
+    d.skipped.length ? h('div', { class: 'warnbox' }, h('b', {}, 'These could not be read and will be left out:'),
+      h('ul', {}, d.skipped.map((x) => h('li', {}, x))), d.moreSkipped ? h('p', {}, `and ${d.moreSkipped} more`) : null) : null,
+    h('label', { class: 'field' }, 'Admin password', pw),
+    err,
+    h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', onclick: closeModal }, 'Cancel'), go)));
+  pw.focus();
 }
 
 // ---------------------------------------------------------------- shared actions

@@ -15,7 +15,7 @@ Download the LTS version from https://nodejs.org and install it. Then open a ter
 (Mac: Terminal. Windows: PowerShell. Linux: any terminal) and check it worked:
 
 ```bash
-node --version      # should print v18 or higher
+node --version      # should print v20 or higher
 ```
 
 ### Step 2: get the code
@@ -79,9 +79,30 @@ If other devices cannot connect:
 
 ### Changing the password later
 
-Log in, then go to **Settings, Change admin password**. If the password is forgotten, stop
-the server, delete `data/kumon-data.json` and `data/kumon-data.prev.json` (this removes the
-student list, so copy the `data` folder somewhere first), and start again with a new password.
+Log in, then go to **Settings, Change admin password**. Changing it logs out every other
+device.
+
+If the password is forgotten: stop the server, copy the `data` folder somewhere safe, delete
+`data/kumon-data.json` and `data/kumon-data.prev.json`, and start again with a new password.
+Visit records are kept. Then go to **Settings, Restore** and restore the newest saved copy to
+get the student list back (the new password stays).
+
+### Updating to a new version
+
+```bash
+git pull
+```
+
+Then stop the server (Ctrl+C) and start it again. Your students, records and backups live in
+the `data` folder, which git never touches (it is listed in `.gitignore` and is not part of
+the code), so pulling, switching branches or resetting the code leaves them alone. Each time
+the server starts it also saves a copy of the data to `data/backups/` before doing anything
+else, and it will not start if the data was saved by a newer version than the code.
+
+Two things that *do* lose data, so avoid them: deleting the folder and cloning it again, and
+`git clean -x`. If you update by downloading a new ZIP, copy the `data` folder from the old
+folder into the new one before starting it.
+
 
 ### Other options
 
@@ -137,7 +158,7 @@ itself after 8 seconds). When leaving, tap the card again and press **Check out*
   | --- | --- |
   | Green | Less than 60% of the session has passed |
   | Amber | 60–85% of the session has passed |
-  | Orange | Over 85%: almost time to go! |
+  | Orange | Over 85%, almost time to go |
   | Red, pulsing | Past the scheduled check-out time and still here |
   | Blue | Checked out |
 
@@ -147,7 +168,7 @@ itself after 8 seconds). When leaving, tap the card again and press **Check out*
   **Remove all finished** link appears next to the counters. Under the board, **Expected today**
   lists who is scheduled but hasn't arrived, with their check-in time; anyone past it is marked
   late in amber. A student who checks in after their time shows how late they were.
-* **Students**: add students with the form at the top; edit, delete, or check in below.
+* **Students**: add, import, edit or delete students, or check one in by hand.
   If a student tapped the wrong name, **Undo check-in** removes that check-in.
 * **Records**: every visit, with the exact check-in and check-out time (to the second), how
   long the student stayed, and whether they were **on time**, **late** (and by how many
@@ -161,9 +182,16 @@ itself after 8 seconds). When leaving, tap the card again and press **Check out*
   check-out): everyone scheduled that day who never checked in is marked absent. If nobody at
   all checked in that day, it is treated as a day the center was closed and no one is marked
   absent. Absences are counted from the day this version is first started, never backwards.
-* **Settings**: change the admin password and download a backup of all records.
+* **Settings**: change the admin password, download a backup of all records, and restore.
+  **Restore** takes either a downloaded backup file or one of the copies saved on the server
+  computer (one per day for 30 days, plus one each time the server starts). It replaces the
+  student list, adds back any visit records that are missing, and never deletes visit records
+  or changes the password. It asks for the password, and saves the current data first so a
+  restore can be undone from the same list.
 
-The admin login lasts 12 hours of inactivity.
+The admin page asks for the password again whenever the tab or browser is closed and opened
+again, or the server is restarted. A login also ends after 20 minutes with the page closed and
+after 12 hours in any case. Logins are only kept in the server's memory, never on disk.
 
 If the student page cannot reach the server (the server computer is asleep or off the Wi-Fi),
 it shows an amber "Not connected" bar at the top.
@@ -173,12 +201,7 @@ it shows an amber "Not connected" bar at the top.
 The real site should stay on a computer at the center so student data never leaves your
 network.
 
-**/ Docker:**
-
-```bash
-docker build -t kumon-checkin .
-docker run -p 8787:8787 -v kumon-data:/app/data -e ADMIN_PASSWORD=yourpassword kumon-checkin
-```
+Use the Docker steps above, or the `render.yaml` blueprint on Render, and only made-up names.
 
 Environment variables: `PORT`, `HOST`, `DATA_DIR`, `ADMIN_PASSWORD` (first start only),
 `DEMO=1`, `TRUST_PROXY=1` (needed behind a provider's HTTPS proxy; set automatically on Render).

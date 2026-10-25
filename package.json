@@ -5,5 +5,5 @@
   "description": "Self-hosted Kumon student check-in / check-out kiosk and admin dashboard. Zero dependencies.",
   "main": "server.js",
   "scripts": { "start": "node server.js" },
-  "engines": { "node": ">=18" }
+  "engines": { "node": ">=20" }
 }
