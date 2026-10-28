@@ -148,6 +148,15 @@ ID), tap their card, tap **Check in**.
 The screen shows "You're checked in" with the time and a **Close** button (it also closes by
 itself after 8 seconds). When leaving, tap the card again and press **Check out**.
 
+A student who tries to check in more than 10 minutes before or after their class time is not
+checked in. The student page shows a message ("You're 25 minutes late", in red, or "You're 15
+minutes early", in purple) that they can close; anyone within 10 minutes of their class time
+checks in normally. A teacher can still let the student in: they appear under **Waiting for a
+teacher** on every admin page, with a count on the Live board tab. **Let in** asks for the admin
+password and records the check-in at the moment the student first tried, marked "Let in by
+teacher" in Records and the CSV. **Not now** clears them from the list. Checking in again later
+the same day, and days with no class, are not limited. The student page always uses the light color scheme.
+
 **Teachers** (`/admin`) have four pages:
 
 * **Live board**: empty at the start of the day. When a student checks in, a row appears with a

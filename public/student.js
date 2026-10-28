@@ -54,13 +54,14 @@ function render() {
     return;
   }
   for (const s of list) {
-    const statusText = s.status === 'in' ? `Since ${fmtTime(s.since)}` : s.status === 'done' ? 'Left for today' : 'Not here yet';
-    grid.appendChild(
-      h('button', { class: `card ${s.status}`, type: 'button', onclick: () => openModal(s) },
+    const statusText = s.status === 'in' ? `Here since ${fmtTime(s.since)}` : s.status === 'done' ? 'Left for today' : s.status === 'wait' ? 'Ask a teacher' : 'Not here yet';
+    const card = h('button', { class: `card ${s.status}`, type: 'button', onclick: () => openModal(s) },
         avatar(s.name),
         h('span', { class: 'body' },
           h('span', { class: 'name' }, s.name),
-          h('span', { class: 'meta' }, s.kumonId ? h('span', { class: 'badge' }, `ID ${s.kumonId}`) : null, h('span', { class: 'dot' }), h('span', { class: 'status-text' }, statusText)))));
+          h('span', { class: 'meta' }, s.kumonId ? h('span', { class: 'badge' }, `ID ${s.kumonId}`) : null, h('span', { class: 'status-text' }, s.status === 'wait' ? icon('lock') : null, statusText))));
+    card.style.setProperty('--hue', String(hueFor(s.name)));
+    grid.appendChild(card);
   }
 }
 
@@ -68,8 +69,10 @@ search.addEventListener('input', () => { state.query = search.value; render(); }
 
 // ---- modal flow
 let autoCloseTimer = null;
+let lockPoll = null;
 function closeModal() {
   clearTimeout(autoCloseTimer);
+  clearInterval(lockPoll); lockPoll = null;
   clear(modalRoot);
   state.modalOpen = false;
   search.value = ''; state.query = '';
@@ -101,7 +104,49 @@ function openModal(s) {
     const started = Date.now();
     const r = await api('POST', '/api/student/toggle', { id: s.id, action });
     const wait = Math.max(0, 100 - (Date.now() - started)); // show the spinner for about 0.1 s
-    setTimeout(() => showResult(r), wait);
+    setTimeout(() => (r.status === 423 ? showLocked(r.data) : showResult(r)), wait);
+  }
+
+  // Too early or too late: the check-in did not go through. The message can be closed like any
+  // other; a teacher can still let the student in from the admin page, and if that happens while
+  // the message is open it turns into the normal "You're checked in".
+  function showLocked(info) {
+    clearTimeout(autoCloseTimer);
+    const late = info.kind === 'late';
+    clear(body);
+    body.closest('.modal').classList.add('locked', late ? 'is-late' : 'is-early');
+    body.append(
+      h('div', { class: 'result' },
+        h('div', { class: 'mark lock' }, icon('lock')),
+        h('h2', {}, `You're ${minutesText(info.min)} ${late ? 'late' : 'early'}`),
+        h('div', { class: 'time' }, `Your class starts at ${fmtHHMM(info.schedIn)}.`),
+        h('p', { class: 'ask' }, late ? 'Please ask a teacher to check you in.' : 'You can check in from ' + fmtHHMM(minus(info.schedIn, 10)) + ', or ask a teacher.'),
+        h('div', { class: 'waiting' }, 'Not checked in')),
+      h('div', { class: 'actions' }, h('button', { class: 'btn btn-lg btn-primary', type: 'button', onclick: closeModal }, 'Close')));
+    lockPoll = setInterval(async () => {
+      const r = await api('GET', '/api/student/students');
+      if (!r.ok) return;
+      const me = r.data.students.find((x) => x.id === s.id);
+      if (!me || me.status === 'wait') return;
+      clearInterval(lockPoll); lockPoll = null;
+      clearTimeout(autoCloseTimer);
+      body.closest('.modal').classList.remove('locked', 'is-late', 'is-early');
+      if (me.status === 'in') showResult({ ok: true, data: { time: me.since } });
+      else showSentAway();
+    }, 2000);
+    autoCloseTimer = setTimeout(closeModal, 15000);
+    body.querySelector('.actions .btn').focus();
+  }
+
+  function showSentAway() {
+    clear(body);
+    body.append(
+      h('div', { class: 'result' },
+        h('div', { class: 'mark warn' }, icon('warn')),
+        h('h2', {}, 'Not yet'),
+        h('div', { class: 'time' }, 'A teacher will help you. Try again a little later.')),
+      h('div', { class: 'actions' }, h('button', { class: 'btn btn-lg btn-primary', type: 'button', onclick: closeModal }, 'Close')));
+    autoCloseTimer = setTimeout(closeModal, 8000);
   }
 
   function showResult(r) {
@@ -128,12 +173,22 @@ function openModal(s) {
     const closeBtn = body.querySelector('.actions .btn'); if (closeBtn) closeBtn.focus();
   }
 
-  showConfirm();
+  if (s.status === 'wait') showLocked(s); else showConfirm();
   modalRoot.appendChild(overlay);
   const primary = body.querySelector('#primary-action'); if (primary) primary.focus();
 }
 
 function firstName(n) { return n.split(' ')[0]; }
+function minutesText(min) {
+  if (min < 60) return `${min} minute${min === 1 ? '' : 's'}`;
+  const hh = Math.floor(min / 60), mm = min % 60;
+  return `${hh} hour${hh === 1 ? '' : 's'}${mm ? ` ${mm} min` : ''}`;
+}
+function minus(hhmm, n) {
+  const [hh, mm] = hhmm.split(':').map(Number);
+  const t = hh * 60 + mm - n;
+  return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+}
 
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && state.modalOpen) closeModal(); });
 

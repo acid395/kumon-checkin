@@ -51,7 +51,8 @@ const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const KEEP_RECENT_DAYS = 14;   // day records kept in the main file (completed visits live in history/)
 const KEEP_LOG_DAYS = 7;       // event log (today's activity) kept in the main file
 const HISTORY_DIR = path.join(DATA_DIR, 'history');   // sessions-YYYY.ndjson, one visit per line, kept forever
-const MAX_VIEW_ROWS = 1500;    // most rows the Records page shows at once (CSV export has no cap)
+const MAX_VIEW_ROWS = 1500;
+const CHECKIN_WINDOW_MIN = 10; // checking in more than this many minutes early or late needs a teacher    // most rows the Records page shows at once (CSV export has no cap)
 
 // Hosting options (all optional; none are needed when running on a computer at the center):
 //   TRUST_PROXY=1     behind a hosting provider's HTTPS proxy (Render, Fly, Railway...). Set
@@ -68,7 +69,7 @@ const DEMO = /^(1|true|yes)$/i.test(process.env.DEMO || '');
 function randomToken(bytes) { return crypto.randomBytes(bytes).toString('base64url'); }
 
 function defaultData() {
-  return { version: DATA_VERSION, adminHash: null, students: [], attendance: {}, log: [] };
+  return { version: DATA_VERSION, adminHash: null, students: [], attendance: {}, log: [], pending: {} };
 }
 
 function ensureDirs() {
@@ -128,6 +129,7 @@ function normalise(parsed) {
   const d = Object.assign(defaultData(), parsed);
   delete d.kioskKey; delete d.settings; delete d.sessions; // leftovers from earlier versions
   d.version = DATA_VERSION;
+  if (!d.pending || typeof d.pending !== 'object' || Array.isArray(d.pending)) d.pending = {};
   for (const s of d.students) migrateStudent(s);
   return d;
 }
@@ -276,6 +278,7 @@ function visitFrom(studentId, dateKey, rec) {
     src: rec.outSrc || 'student',
     auto: !!rec.auto,
   };
+  if (rec.approved) v.approved = rec.approved; // 'late' or 'early': a teacher let them in
   v.lateMin = lateMinOf(v);
   return v;
 }
@@ -400,6 +403,7 @@ function queryHistory({ from, to, studentId, group, status }) {
       const s = data.students.find((x) => x.id === sid);
       const sc = schedOn(s, weekdayOf(today));
       const v = { id: `${sid}-${rec.in}`, date: today, studentId: sid, name: rec.name || (s && s.name) || 'Unknown', kumonId: rec.kumonId ?? (s ? s.kumonId : ''), in: rec.in, out: null, min: Math.max(0, Math.round((Date.now() - new Date(rec.in)) / 60000)), schedIn: rec.schedIn ?? (sc ? sc.in : ''), schedOut: rec.schedOut ?? (sc ? sc.out : ''), src: '', auto: false, open: true };
+      if (rec.approved) v.approved = rec.approved;
       v.lateMin = lateMinOf(v);
       present.add(`${sid}|${today}`);
       rows.push(v);
@@ -456,7 +460,7 @@ function historyCsv(q) {
       const wd = WEEKDAYS[weekdayOf(v.date)];
       if (v.kind === 'absent') { rows.push([v.date, wd, v.kumonId || '', v.name, 'Absent', '', v.schedIn, '', v.schedOut, '', '', '', '']); continue; }
       const late = v.lateMin ?? lateMinOf(v);
-      const note = [v.open ? 'Still here' : v.auto ? 'No check-out recorded; closed at scheduled time' : v.src === 'admin' ? 'Checked out by teacher' : '', late == null ? 'Not scheduled that day' : ''].filter(Boolean).join('; ');
+      const note = [v.approved ? `Let in by teacher (${v.approved})` : '', v.open ? 'Still here' : v.auto ? 'No check-out recorded; closed at scheduled time' : v.src === 'admin' ? 'Checked out by teacher' : '', late == null ? 'Not scheduled that day' : ''].filter(Boolean).join('; ');
       rows.push([v.date, wd, v.kumonId || '', v.name, late > 0 ? 'Late' : 'Present', late > 0 ? late : '', v.schedIn, fmtClock(v.in), v.schedOut, v.out ? fmtClock(v.out) : '', v.open ? '' : v.min, v.open ? '' : fmtMin(v.min), note]);
     }
   } else {
@@ -550,6 +554,7 @@ setInterval(() => {
     for (const [ip, r] of loginFails) if (r.resetAt < now) loginFails.delete(ip);
     closeStaleDays();
     markAbsences();
+    clearOldPending();
   } catch (err) { console.error('housekeeping failed:', err.message); }
 }, 60000).unref();
 
@@ -748,8 +753,8 @@ function todayRecords() {
   return data.attendance[key] || {};
 }
 
-function recordEvent(student, action, source) {
-  const now = new Date();
+function recordEvent(student, action, source, opts = {}) {
+  const now = opts.at ? new Date(opts.at) : new Date();
   const key = localDateKey(now);
   const day = (data.attendance[key] = data.attendance[key] || {});
   const rec = day[student.id] || { in: null, out: null };
@@ -760,6 +765,8 @@ function recordEvent(student, action, source) {
     // snapshot name/schedule so the permanent record is right even if the student is edited later
     const sc = schedOn(student, now.getDay());
     day[student.id] = { in: iso, out: null, dismissed: false, name: student.name, kumonId: student.kumonId || '', schedIn: sc ? sc.in : '', schedOut: sc ? sc.out : '' };
+    if (opts.approved) day[student.id].approved = opts.approved;
+    delete data.pending[student.id];
   } else if (action === 'out') {
     if (!rec.in || rec.out) return { error: `${student.name} is not checked in.` };
     rec.out = iso; rec.outSrc = source;
@@ -790,13 +797,45 @@ function recordEvent(student, action, source) {
   return { ok: true, time: iso, record: day[student.id] || null };
 }
 
+// ---------------------------------------------------------------- check-in window
+//
+// A student's first check-in of the day must be within CHECKIN_WINDOW_MIN minutes of their
+// class time. Outside that, the check-in is refused and the student waits in data.pending until
+// a teacher lets them in from the admin page (with the password) or sends them away. A teacher
+// who lets them in records the check-in at the moment the student tried, not when approved.
+function checkinWindow(student, now) {
+  const key = localDateKey(now);
+  const rec = (data.attendance[key] || {})[student.id];
+  if (rec && rec.in) return null; // coming back later the same day is fine
+  const sc = schedOn(student, now.getDay());
+  if (!sc) return null;            // no class today: a make-up visit, allowed
+  const diff = Math.round((now - new Date(`${key}T${sc.in}:00`)) / 60000);
+  if (Math.abs(diff) <= CHECKIN_WINDOW_MIN) return null;
+  return { kind: diff > 0 ? 'late' : 'early', min: Math.abs(diff), schedIn: sc.in };
+}
+
+function pendingToday() {
+  const key = localDateKey(new Date());
+  const out = {};
+  for (const [sid, p] of Object.entries(data.pending)) if (p.date === key && data.students.some((x) => x.id === sid)) out[sid] = p;
+  return out;
+}
+
+function clearOldPending() {
+  const today = pendingToday();
+  if (Object.keys(today).length !== Object.keys(data.pending).length) { data.pending = today; save(); }
+}
+
 function kioskView() {
+  const waiting = pendingToday();
   const recs = todayRecords();
   return data.students
     .map((s) => {
       const r = recs[s.id];
-      const status = r && r.in && !r.out ? 'in' : r && r.out ? 'done' : 'out';
-      return { id: s.id, name: s.name, kumonId: s.kumonId || '', status, since: status === 'in' ? r.in : null };
+      const status = r && r.in && !r.out ? 'in' : r && r.out ? 'done' : waiting[s.id] ? 'wait' : 'out';
+      const v = { id: s.id, name: s.name, kumonId: s.kumonId || '', status, since: status === 'in' ? r.in : null };
+      if (status === 'wait') Object.assign(v, { kind: waiting[s.id].kind, min: waiting[s.id].min, schedIn: waiting[s.id].schedIn });
+      return v;
     })
     .sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -809,6 +848,7 @@ function adminState() {
     students: data.students,
     attendance: data.attendance[key] || {},
     log: data.log.filter((e) => localDateKey(new Date(e.ts)) === key).slice(-300).reverse(),
+    pending: pendingToday(),
   };
 }
 
@@ -861,6 +901,7 @@ function cleanVisit(v) {
   }
   if (!isIso(v.in) || !isIso(v.out) || new Date(v.out) < new Date(v.in)) return null;
   Object.assign(out, { in: v.in, out: v.out, min: Math.round((new Date(v.out) - new Date(v.in)) / 60000), src: ['student', 'admin', 'auto'].includes(v.src) ? v.src : 'student', auto: !!v.auto });
+  if (v.approved === 'late' || v.approved === 'early') out.approved = v.approved;
   out.lateMin = Number.isInteger(v.lateMin) && v.lateMin >= 0 && v.lateMin < 1440 ? v.lateMin : lateMinOf(out);
   return out;
 }
@@ -889,6 +930,7 @@ function cleanBackup(b) {
       if (['student', 'admin', 'auto'].includes(r.outSrc)) rec.outSrc = r.outSrc;
       if (r.auto) rec.auto = true;
       if (r.archived) rec.archived = true;
+      if (r.approved === 'late' || r.approved === 'early') rec.approved = r.approved;
       (attendance[day] = attendance[day] || {})[sid] = rec;
     }
   }
@@ -941,6 +983,17 @@ async function handle(req, res) {
       const s = data.students.find((x) => x.id === b.id);
       if (!s) return json(res, 404, { error: 'Student not found.' });
       if (b.action !== 'in' && b.action !== 'out') return json(res, 400, { error: 'Bad action.' });
+      if (b.action === 'in') {
+        const now = new Date();
+        const w = checkinWindow(s, now);
+        if (w) {
+          const prev = data.pending[s.id];
+          // keep the first attempt so the record shows when they really arrived
+          if (!prev || prev.date !== localDateKey(now)) { data.pending[s.id] = Object.assign({ date: localDateKey(now), at: now.toISOString() }, w); save(); }
+          const p = data.pending[s.id];
+          return json(res, 423, { locked: true, kind: p.kind, min: p.min, schedIn: p.schedIn, at: p.at, name: s.name });
+        }
+      }
       const r = recordEvent(s, b.action, 'student');
       if (r.error) return json(res, 409, { error: r.error });
       return json(res, 200, { ok: true, time: r.time, action: b.action, name: s.name });
@@ -1056,6 +1109,22 @@ async function handle(req, res) {
         save();
         return json(res, 200, { ok: true });
       }
+    }
+
+    const pm = p.match(/^\/api\/admin\/pending\/([A-Za-z0-9_-]+)$/);
+    if (pm && m === 'POST') {
+      const b = await readBody(req);
+      const s = data.students.find((x) => x.id === pm[1]);
+      const pend = pendingToday()[pm[1]];
+      if (!s || !pend) return json(res, 404, { error: 'That student is no longer waiting.' });
+      if (b.action === 'deny') { delete data.pending[s.id]; save(); return json(res, 200, { ok: true }); }
+      if (b.action !== 'allow') return json(res, 400, { error: 'Bad action.' });
+      const ip = clientIp(req);
+      if (loginThrottled(ip)) return json(res, 429, { error: 'Too many wrong passwords. Try again in 15 minutes.' });
+      if (!verifyPassword(String(b.password || ''), data.adminHash)) { noteLoginFail(ip); return json(res, 401, { error: 'Incorrect password.', wrongPassword: true }); }
+      const r = recordEvent(s, 'in', 'admin', { at: pend.at, approved: pend.kind });
+      if (r.error) { delete data.pending[s.id]; save(); return json(res, 409, { error: r.error }); }
+      return json(res, 200, { ok: true, time: r.time });
     }
 
     if (m === 'POST' && p === '/api/admin/attendance') {

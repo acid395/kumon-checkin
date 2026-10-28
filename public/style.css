@@ -18,8 +18,10 @@
   --radius: 10px;
   color-scheme: light dark;
 }
+/* The student page (html.light) always stays light; the admin page follows the device. */
+:root.light { color-scheme: light; }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not(.light) {
     --bg: #15171a; --card: #1d2024; --card-2: #24272c; --text: #e7e8ea; --muted: #959aa3;
     --line: #2e3238; --line-2: #3a3f46; --track: #2e3238; --brand: #5b8def; --brand-hover: #75a0f2;
     --green: #4cb87a; --green-soft: #1b2e23; --amber: #e0a43a; --amber-soft: #33291a;
@@ -107,7 +109,7 @@ label.field > .input { margin-top: 5px; display: block; }
   font-weight: 650; font-size: 14px; background: hsl(var(--hue, 215) 45% 92%); color: hsl(var(--hue, 215) 45% 32%);
 }
 .avatar.lg { width: 56px; height: 56px; font-size: 19px; }
-@media (prefers-color-scheme: dark) { .avatar { background: hsl(var(--hue, 215) 25% 24%); color: hsl(var(--hue, 215) 55% 80%); } }
+@media (prefers-color-scheme: dark) { :root:not(.light) .avatar { background: hsl(var(--hue, 215) 25% 24%); color: hsl(var(--hue, 215) 55% 80%); } }
 
 /* ---- student page */
 .searchwrap { position: relative; }
@@ -276,3 +278,61 @@ div.field { font-size: 13px; color: var(--muted); font-weight: 550; margin-botto
 table.log tr.absent td { background: color-mix(in srgb, var(--red) 5%, var(--card)); }
 table.log td:last-child { white-space: nowrap; }
 #hist-table th, #hist-table td { padding: 10px 11px; }
+
+/* ---- student page colors (always light) */
+.student body { background: #fbf7ef; }
+.student .topbar { background: #1f56c4; border-bottom: 0; color: #fff; position: sticky; }
+.student .topbar::after { content: ""; position: absolute; left: 0; right: 0; bottom: -6px; height: 6px;
+  background: linear-gradient(90deg, #e5484d 0 16.6%, #f76b15 0 33.3%, #ffc53d 0 50%, #30a46c 0 66.6%, #0090ff 0 83.3%, #8e4ec6 0); }
+.student .topbar h1 { font-size: 18px; }
+.student .logo { background: #ffc53d; color: #1f2a44; }
+.student .clock { color: rgba(255, 255, 255, .85); font-size: 14px; }
+.student .banner { margin-top: 6px; }
+.student .wrap { padding-top: 30px; }
+.student .search { border: 2px solid #c9d6f2; background: #fff; }
+.student .search:focus { border-color: #1f56c4; box-shadow: 0 0 0 4px rgba(31, 86, 196, .15); }
+.student .searchwrap svg { color: #1f56c4; }
+.student .grid { gap: 12px; }
+.student .card { border: 1px solid #ebe5d8; border-top: 5px solid hsl(var(--hue, 215) 70% 55%); background: #fff; box-shadow: 0 1px 2px rgba(60, 40, 0, .06); }
+@media (hover: hover) { .student .card:hover { background: hsl(var(--hue, 215) 80% 97%); border-color: hsl(var(--hue, 215) 60% 80%); border-top-color: hsl(var(--hue, 215) 70% 55%); } }
+.student .card:active { transform: translateY(1px); }
+.student .avatar { background: hsl(var(--hue, 215) 70% 55%); color: #fff; }
+.student .badge { background: #f1ede4; color: #5d5a52; }
+.student .status-text { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; font-weight: 600; font-size: 12px; background: #f1ede4; color: #6b675e; }
+.student .status-text svg { width: 12px; height: 12px; }
+.student .card.in { background: #eaf8ef; border-color: #b6e3c6; border-top-color: #30a46c; box-shadow: none; }
+.student .card.in .status-text { background: #30a46c; color: #fff; }
+.student .card.done { background: #f3f1ec; border-top-color: #b9b4a8; }
+.student .card.done .avatar { background: #b9b4a8; }
+.student .card.done .status-text { background: #e1ecfd; color: #1f56c4; }
+.student .card.wait { background: #fff4e8; border-color: #ffcf9f; border-top-color: #f76b15; }
+.student .card.wait .status-text { background: #f76b15; color: #fff; }
+.student .foot a { color: #8a8478; }
+.student .modal { border-top: 8px solid #1f56c4; }
+.student .result .mark.ok { background: #30a46c; color: #fff; }
+.student .result .mark.bye { background: #0090ff; color: #fff; }
+.student .result .mark.warn { background: #ffc53d; color: #3d2a00; }
+.student .btn-green { background: #2f9e5f; border-color: #2f9e5f; }
+.student .btn-blue, .student .btn-primary { background: #1f56c4; border-color: #1f56c4; }
+
+/* locked popup: too early or too late */
+.student .modal.locked.is-late { border-top-color: #e5484d; background: #fff6f5; }
+.student .modal.locked.is-early { border-top-color: #8e4ec6; background: #f9f5fe; }
+.result .mark.lock { color: #fff; }
+.is-late .result .mark.lock { background: #e5484d; }
+.is-early .result .mark.lock { background: #8e4ec6; }
+.locked .result h2 { font-size: 28px; }
+.is-late .result h2 { color: #c62a2f; }
+.is-early .result h2 { color: #6e3aa6; }
+.locked .ask { font-size: 18px; font-weight: 600; margin: 14px 0 6px; }
+.waiting { display: inline-flex; align-items: center; gap: 10px; margin-top: 12px; padding: 8px 16px; border-radius: 999px; background: #fff; border: 1px solid #e6dfd2; font-weight: 600; color: #5d5a52; }
+
+/* admin: students waiting for a teacher */
+.waitpanel { border: 2px solid var(--orange); background: var(--orange-soft); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 16px; }
+.waitpanel h3 { margin: 0 0 10px; font-size: 16px; color: var(--orange); display: flex; align-items: center; gap: 8px; }
+.waitpanel h3 svg { width: 18px; height: 18px; }
+.waitrow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 12px; background: var(--card); border-radius: 8px; margin-top: 8px; }
+.waitrow .nm { font-weight: 650; font-size: 15px; }
+.waitrow .det { color: var(--muted); font-size: 13px; }
+.waitrow .acts { margin-left: auto; display: flex; gap: 6px; }
+.tabs a .count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; margin-left: 6px; border-radius: 9px; background: var(--orange); color: #fff; font-size: 11px; font-weight: 700; }

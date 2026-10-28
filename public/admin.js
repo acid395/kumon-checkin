@@ -14,7 +14,7 @@ const IN_TIMES = timeRange(15 * 60 + 30, 19 * 60);            // check-in: 3:30 
 const OUT_TIMES = timeRange(16 * 60, 19 * 60 + 30);           // check-out: 4:00 PM .. 7:30 PM every 30 min
 const ROUTES = ['board', 'students', 'activity', 'settings'];
 
-const state = { students: [], attendance: {}, log: [], filter: '', boardSig: '', studentsSig: '', statsSig: '', expSig: '', expOpen: false };
+const state = { students: [], attendance: {}, log: [], pending: {}, waitSig: null, filter: '', boardSig: '', studentsSig: '', statsSig: '', expSig: '', expOpen: false };
 $('link-student').prepend(icon('external'));
 
 Clock.start($('clock'));
@@ -81,7 +81,7 @@ $('btn-logout').addEventListener('click', async () => {
 
 function enterApp() {
   show('app');
-  state.boardSig = ''; state.studentsSig = ''; state.statsSig = ''; state.expSig = '';
+  state.boardSig = ''; state.studentsSig = ''; state.statsSig = ''; state.expSig = ''; state.waitSig = null;
   refresh().then(renderPage);
   startPolling();
 }
@@ -101,7 +101,66 @@ async function refresh() {
   state.students = r.data.students;
   state.attendance = r.data.attendance;
   state.log = r.data.log;
+  state.pending = r.data.pending || {};
+  renderWaiting();
   renderCurrent();
+}
+
+// ---------------------------------------------------------------- students waiting for a teacher
+//
+// A student who tries to check in more than 10 minutes early or late is held on the student page
+// until a teacher lets them in here. Shown above every admin page.
+function renderWaiting() {
+  const items = Object.entries(state.pending).map(([id, p]) => ({ s: state.students.find((x) => x.id === id), p })).filter((x) => x.s);
+  const sig = items.map((x) => x.s.id + x.p.at).join(',');
+  if (sig === state.waitSig) return;
+  state.waitSig = sig;
+  const tab = document.querySelector('#tabs a[data-route="board"]');
+  const old = tab.querySelector('.count'); if (old) old.remove();
+  if (items.length) tab.appendChild(h('span', { class: 'count' }, String(items.length)));
+  const box = clear($('waiting'));
+  if (!items.length) return;
+  box.appendChild(h('div', { class: 'waitpanel' },
+    h('h3', {}, icon('lock'), `Waiting for a teacher (${items.length})`),
+    items.map(({ s, p }) => h('div', { class: 'waitrow' },
+      h('div', {},
+        h('div', { class: 'nm' }, s.name),
+        h('div', { class: 'det' },
+          h('b', { class: p.kind === 'late' ? 't-red' : 't-blue' }, `${lateText(p.min).replace(' late', '')} ${p.kind}`),
+          ` · class at ${fmtHHMM(p.schedIn)} · tried at ${fmtTimeSec(p.at)}`, s.kumonId ? ` · ID ${s.kumonId}` : '')),
+      h('div', { class: 'acts' },
+        h('button', { class: 'btn btn-sm', type: 'button', onclick: () => sendAway(s) }, 'Not now'),
+        h('button', { class: 'btn btn-sm btn-green', type: 'button', onclick: () => letIn(s, p) }, 'Let in'))))));
+}
+
+async function sendAway(s) {
+  const r = await api('POST', `/api/admin/pending/${encodeURIComponent(s.id)}`, { action: 'deny' });
+  if (r.status === 401) { stopPolling(); show('login'); return; }
+  if (!r.ok) toast(r.data.error || 'Failed');
+  refresh();
+}
+
+function letIn(s, p) {
+  const pw = h('input', { class: 'input', type: 'password', autocomplete: 'current-password', required: true });
+  const err = h('div', { class: 'error' });
+  const go = h('button', { class: 'btn btn-green', type: 'submit' }, 'Let in');
+  openModal(h('form', { onsubmit: async (e) => {
+      e.preventDefault();
+      err.textContent = ''; go.disabled = true;
+      const r = await api('POST', `/api/admin/pending/${encodeURIComponent(s.id)}`, { action: 'allow', password: pw.value });
+      go.disabled = false;
+      if (r.status === 401 && !r.data.wrongPassword) { closeModal(); stopPolling(); show('login'); return; }
+      if (!r.ok) { err.textContent = r.data.error || 'Failed'; pw.select(); return; }
+      closeModal();
+      toast(`${s.name} checked in at ${fmtTimeSec(r.data.time)}`);
+      refresh();
+    } },
+    h('h2', {}, `Let ${s.name} in?`),
+    h('p', { class: 'sub' }, `${lateText(p.min).replace(' late', '')} ${p.kind} for the ${fmtHHMM(p.schedIn)} class. The check-in is recorded at ${fmtTimeSec(p.at)}, when they tried.`),
+    h('label', { class: 'field' }, 'Admin password', pw),
+    err,
+    h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', onclick: closeModal }, 'Cancel'), go)));
+  pw.focus();
 }
 
 // ---------------------------------------------------------------- routing
@@ -580,7 +639,8 @@ function renderRecords(d) {
         continue;
       }
       const att = v.lateMin == null ? h('span', { class: 't-muted' }, 'Extra visit') : v.lateMin > 0 ? h('span', { class: 'tag amber' }, lateText(v.lateMin)) : h('span', { class: 'tag green' }, 'On time');
-      const note = v.open ? ['Still here', 't-green'] : v.auto ? ['No check-out', 't-amber'] : v.src === 'admin' ? ['Checked out by teacher', 't-muted'] : ['', ''];
+      let note = v.open ? ['Still here', 't-green'] : v.auto ? ['No check-out', 't-amber'] : v.src === 'admin' ? ['Checked out by teacher', 't-muted'] : ['', ''];
+      if (v.approved) note = [['Let in by teacher', note[0]].filter(Boolean).join(' · '), 't-orange'];
       body.appendChild(h('tr', { class: v.open ? 'open' : '' },
         h('td', { class: 'date' }, dateCell),
         h('td', {}, nameCell(v)),
