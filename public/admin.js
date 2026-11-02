@@ -108,8 +108,8 @@ async function refresh() {
 
 // ---------------------------------------------------------------- students waiting for a teacher
 //
-// A student who tries to check in more than 10 minutes early or late is held on the student page
-// until a teacher lets them in here. Shown above every admin page.
+// A student who tries to check in more than 10 minutes early or late, or on a day with no class,
+// is held on the student page until a teacher lets them in here. Shown above every admin page.
 function renderWaiting() {
   const items = Object.entries(state.pending).map(([id, p]) => ({ s: state.students.find((x) => x.id === id), p })).filter((x) => x.s);
   const sig = items.map((x) => x.s.id + x.p.at).join(',');
@@ -126,11 +126,15 @@ function renderWaiting() {
       h('div', {},
         h('div', { class: 'nm' }, s.name),
         h('div', { class: 'det' },
-          h('b', { class: p.kind === 'late' ? 't-red' : 't-blue' }, `${lateText(p.min).replace(' late', '')} ${p.kind}`),
-          ` · class at ${fmtHHMM(p.schedIn)} · tried at ${fmtTimeSec(p.at)}`, s.kumonId ? ` · ID ${s.kumonId}` : '')),
+          h('b', { class: p.kind === 'late' ? 't-red' : 't-blue' }, waitReason(p)),
+          p.schedIn ? ` · class at ${fmtHHMM(p.schedIn)}` : '', ` · tried at ${fmtTimeSec(p.at)}`, s.kumonId ? ` · ID ${s.kumonId}` : '')),
       h('div', { class: 'acts' },
         h('button', { class: 'btn btn-sm', type: 'button', onclick: () => sendAway(s) }, 'Not now'),
         h('button', { class: 'btn btn-sm btn-green', type: 'button', onclick: () => letIn(s, p) }, 'Let in'))))));
+}
+
+function waitReason(p) {
+  return p.kind === 'noclass' ? 'No class today' : `${lateText(p.min).replace(' late', '')} ${p.kind}`;
 }
 
 async function sendAway(s) {
@@ -156,7 +160,7 @@ function letIn(s, p) {
       refresh();
     } },
     h('h2', {}, `Let ${s.name} in?`),
-    h('p', { class: 'sub' }, `${lateText(p.min).replace(' late', '')} ${p.kind} for the ${fmtHHMM(p.schedIn)} class. The check-in is recorded at ${fmtTimeSec(p.at)}, when they tried.`),
+    h('p', { class: 'sub' }, `${p.schedIn ? `${waitReason(p)} for the ${fmtHHMM(p.schedIn)} class` : 'No class today'}. The check-in is recorded at ${fmtTimeSec(p.at)}, when they tried.`),
     h('label', { class: 'field' }, 'Admin password', pw),
     err,
     h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', onclick: closeModal }, 'Cancel'), go)));
@@ -752,7 +756,7 @@ function renderSettings(force) {
       h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save password')));
 }
 
-const COPY_KIND = { daily: 'Daily copy', start: 'Server started', 'before-restore': 'Before a restore' };
+const COPY_KIND = { daily: 'Daily copy', start: 'Server started', 'before-restore': 'Before a restore', 'before-update': 'Before an update' };
 const fmtWhen = (iso) => new Date(iso).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
 async function loadSavedCopies() {

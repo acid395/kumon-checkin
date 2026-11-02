@@ -52,6 +52,7 @@ const KEEP_RECENT_DAYS = 14;   // day records kept in the main file (completed v
 const KEEP_LOG_DAYS = 7;       // event log (today's activity) kept in the main file
 const HISTORY_DIR = path.join(DATA_DIR, 'history');   // sessions-YYYY.ndjson, one visit per line, kept forever
 const MAX_VIEW_ROWS = 1500;
+const APPROVED_KINDS = ['late', 'early', 'noclass'];
 const CHECKIN_WINDOW_MIN = 10; // checking in more than this many minutes early or late needs a teacher    // most rows the Records page shows at once (CSV export has no cap)
 
 // Hosting options (all optional; none are needed when running on a computer at the center):
@@ -83,13 +84,7 @@ function tryParse(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return null; }
 }
 
-function latestBackup() {
-  try {
-    return fs.readdirSync(BACKUP_DIR).filter((f) => /^kumon-data-\d{4}-\d{2}-\d{2}\.json$/.test(f)).sort().map((f) => path.join(BACKUP_DIR, f)).pop() || null;
-  } catch (_) { return null; }
-}
-
-// Load order: main file -> previous version -> newest daily backup -> fresh start.
+// Load order: main file -> previous version -> newest saved copy in backups/ -> fresh start.
 // A main file that exists but cannot be parsed is never overwritten: we stop and say so.
 function loadData() {
   ensureDirs();
@@ -109,10 +104,10 @@ function loadData() {
     snapshot('start'); // a copy as it was before this version of the code touched it
     return normalise(parsed);
   }
-  for (const candidate of [PREV_FILE, latestBackup()]) {
-    if (candidate && fs.existsSync(candidate)) {
+  for (const candidate of [PREV_FILE, ...savedCopies().map((c) => c.full)]) {
+    if (fs.existsSync(candidate)) {
       const parsed = tryParse(candidate);
-      if (parsed && parsed.adminHash) {
+      if (parsed && parsed.adminHash && !(Number(parsed.version) > DATA_VERSION)) {
         console.log(`  Main data file was missing; restored from ${candidate}`);
         const d = normalise(parsed);
         writeData(d);
@@ -177,8 +172,9 @@ function dailyBackup() {
   } catch (err) { console.error('backup failed:', err.message); }
 }
 
-// Extra copies taken when the server starts and before a restore; the newest few of each are kept.
-const SNAPSHOT_RE = /^(start|before-restore)-(\d{4}-\d{2}-\d{2})-(\d{6,9})\.json$/;
+// Extra copies taken when the server starts, before a restore and before an update (update.js);
+// the newest few of each are kept.
+const SNAPSHOT_RE = /^(start|before-restore|before-update)-(\d{4}-\d{2}-\d{2})-(\d{6,9})\.json$/;
 function snapshot(kind) {
   if (!fs.existsSync(DATA_FILE)) return;
   const d = new Date();
@@ -460,7 +456,7 @@ function historyCsv(q) {
       const wd = WEEKDAYS[weekdayOf(v.date)];
       if (v.kind === 'absent') { rows.push([v.date, wd, v.kumonId || '', v.name, 'Absent', '', v.schedIn, '', v.schedOut, '', '', '', '']); continue; }
       const late = v.lateMin ?? lateMinOf(v);
-      const note = [v.approved ? `Let in by teacher (${v.approved})` : '', v.open ? 'Still here' : v.auto ? 'No check-out recorded; closed at scheduled time' : v.src === 'admin' ? 'Checked out by teacher' : '', late == null ? 'Not scheduled that day' : ''].filter(Boolean).join('; ');
+      const note = [v.approved ? `Let in by teacher (${v.approved === 'noclass' ? 'no class that day' : v.approved})` : '', v.open ? 'Still here' : v.auto ? 'No check-out recorded; closed at scheduled time' : v.src === 'admin' ? 'Checked out by teacher' : '', late == null ? 'Not scheduled that day' : ''].filter(Boolean).join('; ');
       rows.push([v.date, wd, v.kumonId || '', v.name, late > 0 ? 'Late' : 'Present', late > 0 ? late : '', v.schedIn, fmtClock(v.in), v.schedOut, v.out ? fmtClock(v.out) : '', v.open ? '' : v.min, v.open ? '' : fmtMin(v.min), note]);
     }
   } else {
@@ -800,15 +796,15 @@ function recordEvent(student, action, source, opts = {}) {
 // ---------------------------------------------------------------- check-in window
 //
 // A student's first check-in of the day must be within CHECKIN_WINDOW_MIN minutes of their
-// class time. Outside that, the check-in is refused and the student waits in data.pending until
-// a teacher lets them in from the admin page (with the password) or sends them away. A teacher
+// class time, and on a day with no class it always needs a teacher. Otherwise the check-in is
+// refused and the student waits in data.pending until a teacher lets them in from the admin page (with the password) or sends them away. A teacher
 // who lets them in records the check-in at the moment the student tried, not when approved.
 function checkinWindow(student, now) {
   const key = localDateKey(now);
   const rec = (data.attendance[key] || {})[student.id];
   if (rec && rec.in) return null; // coming back later the same day is fine
   const sc = schedOn(student, now.getDay());
-  if (!sc) return null;            // no class today: a make-up visit, allowed
+  if (!sc) return { kind: 'noclass', min: 0, schedIn: '' }; // no class today: a teacher decides
   const diff = Math.round((now - new Date(`${key}T${sc.in}:00`)) / 60000);
   if (Math.abs(diff) <= CHECKIN_WINDOW_MIN) return null;
   return { kind: diff > 0 ? 'late' : 'early', min: Math.abs(diff), schedIn: sc.in };
@@ -901,7 +897,7 @@ function cleanVisit(v) {
   }
   if (!isIso(v.in) || !isIso(v.out) || new Date(v.out) < new Date(v.in)) return null;
   Object.assign(out, { in: v.in, out: v.out, min: Math.round((new Date(v.out) - new Date(v.in)) / 60000), src: ['student', 'admin', 'auto'].includes(v.src) ? v.src : 'student', auto: !!v.auto });
-  if (v.approved === 'late' || v.approved === 'early') out.approved = v.approved;
+  if (APPROVED_KINDS.includes(v.approved)) out.approved = v.approved;
   out.lateMin = Number.isInteger(v.lateMin) && v.lateMin >= 0 && v.lateMin < 1440 ? v.lateMin : lateMinOf(out);
   return out;
 }
@@ -930,7 +926,7 @@ function cleanBackup(b) {
       if (['student', 'admin', 'auto'].includes(r.outSrc)) rec.outSrc = r.outSrc;
       if (r.auto) rec.auto = true;
       if (r.archived) rec.archived = true;
-      if (r.approved === 'late' || r.approved === 'early') rec.approved = r.approved;
+      if (APPROVED_KINDS.includes(r.approved)) rec.approved = r.approved;
       (attendance[day] = attendance[day] || {})[sid] = rec;
     }
   }

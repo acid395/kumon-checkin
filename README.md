@@ -89,20 +89,28 @@ get the student list back (the new password stays).
 
 ### Updating to a new version
 
+Double-click `update.command` (Mac) or `update.bat` (Windows), or run:
+
 ```bash
-git pull
+node update.js
 ```
 
-Then stop the server (Ctrl+C) and start it again. Your students, records and backups live in
-the `data` folder, which git never touches (it is listed in `.gitignore` and is not part of
-the code), so pulling, switching branches or resetting the code leaves them alone. Each time
-the server starts it also saves a copy of the data to `data/backups/` before doing anything
-else, and it will not start if the data was saved by a newer version than the code.
+Then stop the server (Ctrl+C) and start it again. The updater saves a copy of the data to
+`data/backups/` first (it shows up under **Settings, Restore** as "Before an update"), then
+downloads the new code with `git pull --ff-only`. It never resets or deletes anything; if the
+code folder has its own edits, it stops and changes nothing. Plain `git pull` is just as safe,
+and is how to get the updater the first time.
+
+Your students, records and backups live in the `data` folder, which git never touches (it is
+listed in `.gitignore` and is not part of the code), so pulling, switching branches or resetting
+the code leaves them alone. Each time the server starts it also saves a copy of the data to
+`data/backups/` before doing anything else, and it will not start if the data was saved by a
+newer version than the code. If the main data file ever goes missing, the server rebuilds it
+from the newest saved copy.
 
 Two things that *do* lose data, so avoid them: deleting the folder and cloning it again, and
 `git clean -x`. If you update by downloading a new ZIP, copy the `data` folder from the old
 folder into the new one before starting it.
-
 
 ### Other options
 
@@ -148,14 +156,15 @@ ID), tap their card, tap **Check in**.
 The screen shows "You're checked in" with the time and a **Close** button (it also closes by
 itself after 8 seconds). When leaving, tap the card again and press **Check out**.
 
-A student who tries to check in more than 10 minutes before or after their class time is not
-checked in. The student page shows a message ("You're 25 minutes late", in red, or "You're 15
-minutes early", in purple) that they can close; anyone within 10 minutes of their class time
-checks in normally. A teacher can still let the student in: they appear under **Waiting for a
-teacher** on every admin page, with a count on the Live board tab. **Let in** asks for the admin
-password and records the check-in at the moment the student first tried, marked "Let in by
-teacher" in Records and the CSV. **Not now** clears them from the list. Checking in again later
-the same day, and days with no class, are not limited. The student page always uses the light color scheme.
+A student who tries to check in more than 10 minutes before or after their class time, or on
+a day they have no class, is not checked in. The student page shows a message ("You're 25
+minutes late", "You're 15 minutes early" or "No class today") that they can close; anyone within
+10 minutes of their class time checks in normally. A teacher can still let the student in: they
+appear under **Waiting for a teacher** on every admin page, with a count on the Live board tab.
+**Let in** asks for the admin password and records the check-in at the moment the student first
+tried, marked "Let in by teacher" in Records and the CSV. **Not now** clears them from the list.
+Checking in again later the same day is not limited. The student page always uses the light
+color scheme.
 
 **Teachers** (`/admin`) have four pages:
 

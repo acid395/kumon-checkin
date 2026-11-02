@@ -55,13 +55,11 @@ function render() {
   }
   for (const s of list) {
     const statusText = s.status === 'in' ? `Here since ${fmtTime(s.since)}` : s.status === 'done' ? 'Left for today' : s.status === 'wait' ? 'Ask a teacher' : 'Not here yet';
-    const card = h('button', { class: `card ${s.status}`, type: 'button', onclick: () => openModal(s) },
+    grid.appendChild(h('button', { class: `card ${s.status}`, type: 'button', onclick: () => openModal(s) },
         avatar(s.name),
         h('span', { class: 'body' },
           h('span', { class: 'name' }, s.name),
-          h('span', { class: 'meta' }, s.kumonId ? h('span', { class: 'badge' }, `ID ${s.kumonId}`) : null, h('span', { class: 'status-text' }, s.status === 'wait' ? icon('lock') : null, statusText))));
-    card.style.setProperty('--hue', String(hueFor(s.name)));
-    grid.appendChild(card);
+          h('span', { class: 'meta' }, s.kumonId ? h('span', { class: 'badge' }, `ID ${s.kumonId}`) : null, h('span', { class: 'status-text' }, s.status === 'wait' ? icon('lock') : null, statusText)))));
   }
 }
 
@@ -112,15 +110,15 @@ function openModal(s) {
   // the message is open it turns into the normal "You're checked in".
   function showLocked(info) {
     clearTimeout(autoCloseTimer);
-    const late = info.kind === 'late';
+    const late = info.kind === 'late', noClass = info.kind === 'noclass';
     clear(body);
     body.closest('.modal').classList.add('locked', late ? 'is-late' : 'is-early');
     body.append(
       h('div', { class: 'result' },
         h('div', { class: 'mark lock' }, icon('lock')),
-        h('h2', {}, `You're ${minutesText(info.min)} ${late ? 'late' : 'early'}`),
-        h('div', { class: 'time' }, `Your class starts at ${fmtHHMM(info.schedIn)}.`),
-        h('p', { class: 'ask' }, late ? 'Please ask a teacher to check you in.' : 'You can check in from ' + fmtHHMM(minus(info.schedIn, 10)) + ', or ask a teacher.'),
+        h('h2', {}, noClass ? 'No class today' : `You're ${minutesText(info.min)} ${late ? 'late' : 'early'}`),
+        h('div', { class: 'time' }, noClass ? 'You are not on the schedule for today.' : `Your class starts at ${fmtHHMM(info.schedIn)}.`),
+        h('p', { class: 'ask' }, late || noClass ? 'Please ask a teacher to check you in.' : 'You can check in from ' + fmtHHMM(minus(info.schedIn, 10)) + ', or ask a teacher.'),
         h('div', { class: 'waiting' }, 'Not checked in')),
       h('div', { class: 'actions' }, h('button', { class: 'btn btn-lg btn-primary', type: 'button', onclick: closeModal }, 'Close')));
     lockPoll = setInterval(async () => {
