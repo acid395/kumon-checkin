@@ -96,10 +96,20 @@ node update.js
 ```
 
 Then stop the server (Ctrl+C) and start it again. The updater saves a copy of the data to
-`data/backups/` first (it shows up under **Settings, Restore** as "Before an update"), then
-downloads the new code with `git pull --ff-only`. It never resets or deletes anything; if the
-code folder has its own edits, it stops and changes nothing. Plain `git pull` is just as safe,
-and is how to get the updater the first time.
+`data/backups/` first (it shows up under **Settings, Restore** as "Before an update"), then gets
+the new code:
+
+* **Folder made with `git clone`:** it runs `git pull --ff-only`. It never resets or deletes
+  anything; if the code folder has its own edits, it stops and changes nothing. Plain
+  `git pull` is just as safe.
+* **Folder made from a downloaded ZIP (no git):** it downloads the newest code from GitHub and
+  writes it over the old code files in the same folder. The `data` folder is never written to,
+  no files are deleted, and it checks the download is complete before replacing anything.
+  Needs an internet connection; nothing is uploaded.
+
+Getting the updater the first time: with git, run `git pull` once. With a ZIP from before the
+updater existed, download the new ZIP, unzip it, and copy the whole `data` folder from the old
+folder into the new one before starting it. After that, use the updater.
 
 Your students, records and backups live in the `data` folder, which git never touches (it is
 listed in `.gitignore` and is not part of the code), so pulling, switching branches or resetting
@@ -108,9 +118,8 @@ the code leaves them alone. Each time the server starts it also saves a copy of 
 newer version than the code. If the main data file ever goes missing, the server rebuilds it
 from the newest saved copy.
 
-Two things that *do* lose data, so avoid them: deleting the folder and cloning it again, and
-`git clean -x`. If you update by downloading a new ZIP, copy the `data` folder from the old
-folder into the new one before starting it.
+Things that *do* lose data, so avoid them: deleting the folder and cloning or unzipping it
+again without copying the `data` folder over, and `git clean -x`.
 
 ### Other options
 
